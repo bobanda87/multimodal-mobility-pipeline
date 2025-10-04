@@ -1,0 +1,4 @@
+requests
+pandas
+pyarrow
+gtfs-realtime-bindings
