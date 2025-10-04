@@ -113,4 +113,4 @@ def run_collector(interval=900):
 
 
 if __name__ == "__main__":
-    run_collector(interval=900)
+    run_collector(interval=60)
