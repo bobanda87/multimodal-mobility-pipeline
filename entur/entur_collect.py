@@ -38,10 +38,10 @@ def fetch_entur_data(operator, feed_type):
     try:
         response = requests.get(url, headers=HEADERS, timeout=30)
         if response.status_code != 200:
-            print(f"⚠️  {operator} {feed_type} -> HTTP {response.status_code}")
+            print(f"{operator} {feed_type} -> HTTP {response.status_code}")
             return None
     except Exception as e:
-        print(f"❌  {operator} {feed_type} -> Connection error: {e}")
+        print(f"{operator} {feed_type} -> Connection error: {e}")
         return None
 
     daily_dir = get_daily_dir()
@@ -94,21 +94,21 @@ def fetch_entur_data(operator, feed_type):
         parquet_filename = json_filename.replace(".json", ".parquet")
         df.to_parquet(parquet_filename, index=False)
 
-    print(f"✅  {operator} {feed_type}: {len(decoded)} records saved.")
+    print(f"{operator} {feed_type}: {len(decoded)} records saved.")
     return decoded
 
 
 def run_collector(interval=900):
-    print("🚀 Starting full Entur GTFS-RT collector...\n")
+    print("Starting full Entur GTFS-RT collector...\n")
     while True:
         start_time = datetime.now()
-        print(f"⏰ New cycle at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"New cycle at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         for operator in OPERATORS:
             for name, feed in FEEDS.items():
                 fetch_entur_data(operator, feed)
         duration = (datetime.now() - start_time).total_seconds()
-        print(f"✅ Cycle completed in {duration:.1f}s")
-        print(f"⏱️ Sleeping {interval}s before next pull...\n")
+        print(f"Cycle completed in {duration:.1f}s")
+        print(f"Sleeping {interval}s before next pull...\n")
         time.sleep(interval)
 
 
