@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from google.transit import gtfs_realtime_pb2
 
-BASE_DIR = "entur_data"
+BASE_DIR = "/mnt/volume_ams3_01/entur_data"
 OPERATORS = [
     "AKT", "ATB", "AVI", "BNR", "BRA", "FIN", "FLT", "GJB", "GOA", "INN",
     "KOL", "MOR", "NBU", "NOR", "NSB", "OST", "RUT", "SJN", "SKY", "SOF",
