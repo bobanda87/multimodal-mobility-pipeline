@@ -1,0 +1,6 @@
+requests
+xmltodict
+pandas
+pyarrow
+fastparquet
+python-dotenv
