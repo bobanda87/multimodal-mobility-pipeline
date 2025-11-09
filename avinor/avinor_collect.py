@@ -6,8 +6,11 @@ import pandas as pd
 from datetime import datetime
 import xml.etree.ElementTree as ET
 
-BASE_DIR = "avinor_data"
-# BASE_DIR = "/mnt/volume_ams3_01/avinor_data"
+# Automatically determine BASE_DIR: use mnt path on server, local path otherwise
+if os.path.exists("/mnt/volume_ams3_01"):
+    BASE_DIR = "/mnt/volume_ams3_01/avinor_data"
+else:
+    BASE_DIR = "avinor_data"
 HEADERS = {"User-Agent": "AvinorDataCollector/1.0 (+https://avinor.no)"}
 os.makedirs(BASE_DIR, exist_ok=True)
 

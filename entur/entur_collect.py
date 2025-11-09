@@ -6,8 +6,11 @@ import pandas as pd
 from datetime import datetime
 from google.transit import gtfs_realtime_pb2
 
-BASE_DIR = "entur_data"
-# BASE_DIR = "/mnt/volume_ams3_01/entur_data"
+# Automatically determine BASE_DIR: use mnt path on server, local path otherwise
+if os.path.exists("/mnt/volume_ams3_01"):
+    BASE_DIR = "/mnt/volume_ams3_01/entur_data"
+else:
+    BASE_DIR = "entur_data"
 OPERATORS = [
     "AKT", "ATB", "AVI", "BNR", "BRA", "FIN", "FLT", "GJB", "GOA", "INN",
     "KOL", "MOR", "NBU", "NOR", "NSB", "OST", "RUT", "SJN", "SKY", "SOF",

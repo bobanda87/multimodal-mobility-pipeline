@@ -10,8 +10,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_DIR = "vegvesen_data"
-# BASE_DIR = "/mnt/volume_ams3_01/vegvesen_data"
+# Automatically determine BASE_DIR: use mnt path on server, local path otherwise
+if os.path.exists("/mnt/volume_ams3_01"):
+    BASE_DIR = "/mnt/volume_ams3_01/vegvesen_data"
+else:
+    BASE_DIR = "vegvesen_data"
 os.makedirs(BASE_DIR, exist_ok=True)
 
 USERNAME = os.getenv("VEGVESEN_USER")
