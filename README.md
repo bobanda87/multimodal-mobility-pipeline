@@ -28,7 +28,14 @@ This will install all required packages for all collectors and the normalizer.
 Use the bash script `run_all_collectors.sh` which runs all collectors in the background:
 
 ```bash
-./run_all_collectors.sh
+bash run_all_collectors.sh
+```
+
+**Note:** On Ubuntu/Linux systems, make sure to use `bash` instead of `sh`:
+```bash
+bash run_all_collectors.sh
+# or
+./run_all_collectors.sh  # if the script has execute permissions
 ```
 
 The script automatically:
@@ -56,7 +63,7 @@ tail -f logs/vegvesen_20250120_120000.log
 ### Stopping All Collectors
 
 ```bash
-./run_all_collectors.sh stop
+bash run_all_collectors.sh stop
 ```
 
 ## Running Individual Collectors
