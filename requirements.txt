@@ -1,0 +1,21 @@
+# Universal requirements for all data collectors and normalizer
+
+# Core dependencies
+requests
+pandas
+pyarrow
+
+# Data processing
+polars
+
+# GTFS-RT support (for Entur and Oslo Bysykkel)
+gtfs-realtime-bindings
+
+# XML parsing (for Vegvesen)
+xmltodict
+
+# Parquet support
+fastparquet
+
+# Environment variables (for Vegvesen)
+python-dotenv
