@@ -6,7 +6,8 @@ import pandas as pd
 from datetime import datetime
 from google.transit import gtfs_realtime_pb2
 
-BASE_DIR = "/mnt/volume_ams3_01/entur_data"
+BASE_DIR = "entur_data"
+# BASE_DIR = "/mnt/volume_ams3_01/entur_data"
 OPERATORS = [
     "AKT", "ATB", "AVI", "BNR", "BRA", "FIN", "FLT", "GJB", "GOA", "INN",
     "KOL", "MOR", "NBU", "NOR", "NSB", "OST", "RUT", "SJN", "SKY", "SOF",
@@ -98,7 +99,7 @@ def fetch_entur_data(operator, feed_type):
     return decoded
 
 
-def run_collector(interval=900):
+def run_collector(interval=180):
     print("Starting full Entur GTFS-RT collector...\n")
     while True:
         start_time = datetime.now()
@@ -113,4 +114,4 @@ def run_collector(interval=900):
 
 
 if __name__ == "__main__":
-    run_collector(interval=60)
+    run_collector(interval=180)

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = "vegvesen_data"
+# BASE_DIR = "/mnt/volume_ams3_01/vegvesen_data"
 os.makedirs(BASE_DIR, exist_ok=True)
 
 USERNAME = os.getenv("VEGVESEN_USER")
@@ -143,7 +144,7 @@ def fetch_datex_data(feed_name, url):
         print(f"{feed_name} -> Could not convert to parquet: {e}")
 
 
-def run_collector():
+def run_collector(interval=180):
     print("Starting Statens Vegvesen DATEX collector...\n")
     while True:
         start = datetime.now()
@@ -153,9 +154,9 @@ def run_collector():
         fetch_datex_data("weather_data", FEEDS["weather_data"])
         duration = (datetime.now() - start).total_seconds()
         print(f"Cycle completed in {duration:.1f}s")
-        print("Sleeping 300s before next pull...\n")
-        time.sleep(300)
+        print(f"Sleeping {interval}s before next pull...\n")
+        time.sleep(interval)
 
 
 if __name__ == "__main__":
-    run_collector()
+    run_collector(interval=180)

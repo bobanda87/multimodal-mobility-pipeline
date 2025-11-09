@@ -210,8 +210,10 @@ __marimo__/
 entur/entur_data/
 avinor/avinor_data/
 vegvesen/vegvesen_data/
+oslobysykkel/oslobysykkel_data/
 
 # Fetching logs
 entur/entur_log.txt
 avinor/avinor_log.txt
 vegvesen/vegvesen_log.txt
+oslobysykkel/oslobysykkel_log.txt
