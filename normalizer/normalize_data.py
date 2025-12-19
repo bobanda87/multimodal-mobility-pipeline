@@ -58,9 +58,13 @@ def get_all_parquet_files(data_dir, pattern="*.parquet"):
 # --- AVINOR ------------------------------------------------------
 def normalize_avinor(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize Avinor flight data into a unified schema."""
-    # Handle missing 'status' column by using None
+    # Handle missing 'status' column by using None, then cast to string
     if "status" not in df.columns:
-        df = df.with_columns([pl.lit(None).alias("status")])
+        df = df.with_columns([pl.lit(None).cast(pl.String).alias("status")])
+    else:
+        # Ensure status is string type for consistency
+        df = df.with_columns(
+            [pl.col("status").cast(pl.String).alias("status")])
 
     return (
         df
@@ -184,8 +188,23 @@ def run_normalization():
                     f"  ✗ {os.path.basename(parquet_file)}: Error -> {str(e)[:80]}")
 
         if all_normalized:
+            # Ensure all dataframes have the same schema before combining
+            # Get the schema from the first dataframe
+            first_schema = all_normalized[0].schema
+
+            # Cast all dataframes to match the first schema
+            normalized_aligned = []
+            for df in all_normalized:
+                # Align columns and types to match first schema
+                df_aligned = df.select([
+                    pl.col(col).cast(first_schema[col]) if col in df.columns
+                    else pl.lit(None).cast(first_schema[col]).alias(col)
+                    for col in first_schema.keys()
+                ])
+                normalized_aligned.append(df_aligned)
+
             # Combine all normalized dataframes
-            combined_df = pl.concat(all_normalized)
+            combined_df = pl.concat(normalized_aligned)
             out_path = os.path.join(
                 OUTPUT_DIR,
                 f"{source}_normalized_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.parquet"
