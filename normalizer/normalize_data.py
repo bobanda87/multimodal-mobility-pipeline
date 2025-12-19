@@ -39,9 +39,29 @@ def get_latest_parquet(data_dir, pattern="*.parquet"):
     return max(files, key=os.path.getmtime)
 
 
+def get_all_parquet_files(data_dir, pattern="*.parquet"):
+    """Find all Parquet files in a directory.
+
+    Args:
+        data_dir: Directory to search in
+        pattern: Optional pattern to filter files (e.g., "*vehicle-positions*.parquet")
+
+    Returns:
+        List of parquet file paths, sorted by modification time (oldest first)
+    """
+    files = glob(os.path.join(data_dir, "**", pattern), recursive=True)
+    if not files:
+        return []
+    return sorted(files, key=os.path.getmtime)
+
+
 # --- AVINOR ------------------------------------------------------
 def normalize_avinor(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize Avinor flight data into a unified schema."""
+    # Handle missing 'status' column by using None
+    if "status" not in df.columns:
+        df = df.with_columns([pl.lit(None).alias("status")])
+
     return (
         df
         .with_columns([
@@ -130,27 +150,53 @@ def run_normalization():
     for source, data_dir in DATA_SOURCES.items():
         # For entur, specifically look for vehicle-positions files
         if source == "entur":
-            latest_file = get_latest_parquet(
+            parquet_files = get_all_parquet_files(
                 data_dir, "*vehicle-positions*.parquet")
         else:
-            latest_file = get_latest_parquet(data_dir)
-        if not latest_file:
+            parquet_files = get_all_parquet_files(data_dir)
+
+        if not parquet_files:
             print(f"{source}: No parquet files found.")
             continue
 
-        print(f"{source}: Loading {latest_file}")
-        try:
-            df = pl.read_parquet(latest_file)
-            df_norm = NORMALIZERS[source](df)
+        print(f"{source}: Found {len(parquet_files)} parquet files to normalize\n")
+
+        all_normalized = []
+        processed = 0
+        errors = 0
+
+        for parquet_file in parquet_files:
+            try:
+                df = pl.read_parquet(parquet_file)
+                df_norm = NORMALIZERS[source](df)
+
+                if df_norm.height > 0:
+                    all_normalized.append(df_norm)
+                    processed += 1
+                    print(
+                        f"  ✓ {os.path.basename(parquet_file)}: {df_norm.height} records")
+                else:
+                    print(
+                        f"  - {os.path.basename(parquet_file)}: empty, skipping")
+            except Exception as e:
+                errors += 1
+                print(
+                    f"  ✗ {os.path.basename(parquet_file)}: Error -> {str(e)[:80]}")
+
+        if all_normalized:
+            # Combine all normalized dataframes
+            combined_df = pl.concat(all_normalized)
             out_path = os.path.join(
                 OUTPUT_DIR,
                 f"{source}_normalized_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.parquet"
             )
-            df_norm.write_parquet(out_path)
+            combined_df.write_parquet(out_path)
             print(
-                f"{source}: Normalized and saved -> {out_path} ({df_norm.height} records)\n")
-        except Exception as e:
-            print(f"{source}: Error during normalization -> {e}\n")
+                f"\n{source}: Combined and saved -> {out_path} "
+                f"({combined_df.height} total records from {processed} files)\n")
+        else:
+            print(
+                f"\n{source}: No valid data to save (processed: {processed}, errors: {errors})\n")
 
 
 if __name__ == "__main__":
