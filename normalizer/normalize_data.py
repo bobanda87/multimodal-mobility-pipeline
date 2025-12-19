@@ -3,15 +3,27 @@ from glob import glob
 import polars as pl
 from datetime import datetime
 
-OUTPUT_DIR = "normalized_data"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Automatically determine base path: use mnt path on server, local path otherwise
+if os.path.exists("/mnt/volume_ams3_01"):
+    BASE_PATH = "/mnt/volume_ams3_01"
+    OUTPUT_DIR = "normalized_data"
+    DATA_SOURCES = {
+        "avinor": f"{BASE_PATH}/avinor_data",
+        "entur": f"{BASE_PATH}/entur_data",
+        "oslobysykkel": f"{BASE_PATH}/oslobysykkel_data",
+        "vegvesen": f"{BASE_PATH}/vegvesen_data",
+    }
+else:
+    BASE_PATH = None
+    OUTPUT_DIR = "normalized_data"
+    DATA_SOURCES = {
+        "avinor": "../avinor/avinor_data",
+        "entur": "../entur/entur_data",
+        "oslobysykkel": "../oslobysykkel/oslobysykkel_data",
+        "vegvesen": "../vegvesen/vegvesen_data",
+    }
 
-DATA_SOURCES = {
-    "avinor": "../avinor/avinor_data",
-    "entur": "../entur/entur_data",
-    "oslobysykkel": "../oslobysykkel/oslobysykkel_data",
-    "vegvesen": "../vegvesen/vegvesen_data",
-}
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def get_latest_parquet(data_dir):
