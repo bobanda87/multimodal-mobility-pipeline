@@ -152,10 +152,19 @@ def run_normalization():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     for source, data_dir in DATA_SOURCES.items():
-        # For entur, specifically look for vehicle-positions files
+        # Filter files by type for each source
         if source == "entur":
+            # Only vehicle-positions files have the required columns
             parquet_files = get_all_parquet_files(
                 data_dir, "*vehicle-positions*.parquet")
+        elif source == "oslobysykkel":
+            # Only station_status files have the required columns
+            parquet_files = get_all_parquet_files(
+                data_dir, "*station_status*.parquet")
+        elif source == "vegvesen":
+            # Only weather_data files have the required columns
+            parquet_files = get_all_parquet_files(
+                data_dir, "*weather_data*.parquet")
         else:
             parquet_files = get_all_parquet_files(data_dir)
 
