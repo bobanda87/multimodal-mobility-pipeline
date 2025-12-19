@@ -26,9 +26,14 @@ else:
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-def get_latest_parquet(data_dir):
-    """Find the most recently modified Parquet file in a directory."""
-    files = glob(os.path.join(data_dir, "**", "*.parquet"), recursive=True)
+def get_latest_parquet(data_dir, pattern="*.parquet"):
+    """Find the most recently modified Parquet file in a directory.
+
+    Args:
+        data_dir: Directory to search in
+        pattern: Optional pattern to filter files (e.g., "*vehicle-positions*.parquet")
+    """
+    files = glob(os.path.join(data_dir, "**", pattern), recursive=True)
     if not files:
         return None
     return max(files, key=os.path.getmtime)
@@ -40,7 +45,10 @@ def normalize_avinor(df: pl.DataFrame) -> pl.DataFrame:
     return (
         df
         .with_columns([
-            pl.col("schedule_time").str.to_datetime().alias("timestamp")
+            pl.col("schedule_time")
+            .str.replace("Z", "+00:00")
+            .str.to_datetime(format="%Y-%m-%dT%H:%M:%S%z", strict=False)
+            .alias("timestamp")
         ])
         .select([
             pl.col("airport").alias("location"),
@@ -93,8 +101,9 @@ def normalize_oslobysykkel(df: pl.DataFrame) -> pl.DataFrame:
 def normalize_vegvesen(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize Vegvesen weather data."""
     df = df.with_columns([
-        pl.col("ns10:measurementTimeDefault.ns10:timeValue").str.to_datetime().alias(
-            "timestamp")
+        pl.col("ns10:measurementTimeDefault.ns10:timeValue")
+        .str.to_datetime(format="%Y-%m-%dT%H:%M:%S%.f%z", strict=False)
+        .alias("timestamp")
     ])
     return df.select([
         pl.col("ns10:measurementSiteReference.@id").alias("location"),
@@ -119,7 +128,12 @@ def run_normalization():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     for source, data_dir in DATA_SOURCES.items():
-        latest_file = get_latest_parquet(data_dir)
+        # For entur, specifically look for vehicle-positions files
+        if source == "entur":
+            latest_file = get_latest_parquet(
+                data_dir, "*vehicle-positions*.parquet")
+        else:
+            latest_file = get_latest_parquet(data_dir)
         if not latest_file:
             print(f"{source}: No parquet files found.")
             continue
