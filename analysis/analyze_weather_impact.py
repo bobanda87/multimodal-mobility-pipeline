@@ -48,112 +48,137 @@ def analyze_weather_impact(
         )
 
     print(f"Loading {len(files)} normalized files...")
-    dfs = []
+    # Load each source separately since they have different schemas
+    source_data = {}
     for f in files:
         try:
             df = pl.read_parquet(f)
-            dfs.append(df)
+            # Determine source from filename or from dataframe
+            source = None
+            if "avinor" in f.name:
+                source = "avinor"
+            elif "entur" in f.name:
+                source = "entur"
+            elif "oslobysykkel" in f.name:
+                source = "oslobysykkel"
+            elif "vegvesen" in f.name:
+                source = "vegvesen"
+            else:
+                # Try to get source from dataframe
+                if "source" in df.columns:
+                    sources = df["source"].unique().to_list()
+                    if sources:
+                        source = sources[0]
+
+            if source:
+                if source not in source_data:
+                    source_data[source] = []
+                source_data[source].append(df)
         except Exception as e:
             print(f"Warning: Could not load {f.name}: {e}")
 
-    if not dfs:
+    if not source_data:
         raise RuntimeError("No valid dataframes loaded")
 
-    df = pl.concat(dfs)
+    # Combine dataframes per source
+    combined_by_source = {}
+    for source, dfs in source_data.items():
+        if dfs:
+            combined_by_source[source] = pl.concat(dfs, how='diagonal')
 
-    # Filter Entur data by city bounding box
-    entur_df = df.filter(pl.col("source") == "entur")
-    if entur_df.height > 0:
+    # Process each source separately since they have different schemas
+
+    # Weather data: temperature from vegvesen
+    weather = None
+    if "vegvesen" in combined_by_source:
+        vegvesen_df = combined_by_source["vegvesen"]
+        weather = (
+            vegvesen_df
+            .with_columns([
+                pl.col("timestamp").dt.truncate("1m").alias("minute"),
+                pl.col("metric_value")
+                .cast(pl.Float64, strict=False)
+                .alias("temperature")
+            ])
+            .filter(
+                (pl.col("temperature").is_not_null())
+                & (pl.col("temperature").is_finite())
+            )
+            .group_by("minute")
+            .agg(pl.col("temperature").mean().alias("road_temperature"))
+        )
+
+    # Oslo Bysykkel: average bikes available
+    bysykkel = None
+    if "oslobysykkel" in combined_by_source:
+        oslobysykkel_df = combined_by_source["oslobysykkel"]
+        bysykkel = (
+            oslobysykkel_df
+            .with_columns([
+                pl.col("timestamp").dt.truncate("1m").alias("minute"),
+                pl.col("metric_value")
+                .cast(pl.Float64, strict=False)
+                .alias("bikes")
+            ])
+            .filter(pl.col("bikes").is_not_null())
+            .group_by("minute")
+            .agg(pl.col("bikes").mean().alias("bikes_available"))
+        )
+
+    # Entur: public transport activity (count of vehicles in Oslo area)
+    entur_minute = None
+    if "entur" in combined_by_source:
+        entur_df = combined_by_source["entur"]
+        # Filter by city bounding box
         entur_df = entur_df.filter(
             (pl.col("lat") >= city_bbox["lat_min"])
             & (pl.col("lat") <= city_bbox["lat_max"])
             & (pl.col("lon") >= city_bbox["lon_min"])
             & (pl.col("lon") <= city_bbox["lon_max"])
         )
+        if entur_df.height > 0:
+            entur_minute = (
+                entur_df
+                .with_columns([
+                    pl.col("timestamp").dt.truncate("1m").alias("minute")
+                ])
+                .group_by("minute")
+                .agg(pl.count().alias("public_transport_activity"))
+            )
 
-    # Create time buckets (1 minute intervals)
-    df = df.with_columns([
-        pl.col("timestamp").dt.truncate("1m").alias("minute")
-    ])
-
-    # Weather data: temperature from vegvesen
-    # Filter for temperature-related metrics
-    weather = (
-        df.filter(
-            (pl.col("source") == "vegvesen")
-            & (pl.col("metric_value").is_not_null())
+    # Avinor: flight activity
+    avinor = None
+    if "avinor" in combined_by_source:
+        avinor_df = combined_by_source["avinor"]
+        avinor = (
+            avinor_df
+            .with_columns([
+                pl.col("timestamp").dt.truncate("1m").alias("minute")
+            ])
+            .group_by("minute")
+            .agg(pl.count().alias("flight_activity"))
+            .select(["minute", "flight_activity"])
         )
-        .with_columns([
-            # Extract temperature from metric_value
-            # metric_value might be a string representation of temperature
-            pl.col("metric_value")
-            .cast(pl.Float64, strict=False)
-            .alias("temperature")
-        ])
-        .filter(
-            (pl.col("temperature").is_not_null())
-            & (pl.col("temperature").is_finite())
-        )
-        .group_by("minute")
-        .agg(pl.col("temperature").mean().alias("road_temperature"))
-    )
 
-    # Oslo Bysykkel: average bikes available
-    bysykkel = (
-        df.filter(
-            (pl.col("source") == "oslobysykkel")
-            & (pl.col("metric_value").is_not_null())
-        )
-        .with_columns([
-            pl.col("metric_value").cast(
-                pl.Float64, strict=False).alias("bikes")
-        ])
-        .filter(pl.col("bikes").is_not_null())
-        .group_by("minute")
-        .agg(pl.col("bikes").mean().alias("bikes_available"))
-    )
+    # Join all data sources - start with weather as base
+    if weather is None or weather.height == 0:
+        raise RuntimeError("No weather data available for analysis")
 
-    # Entur: public transport activity (count of vehicles in Oslo area)
-    entur_minute = (
-        entur_df.with_columns([
-            pl.col("timestamp").dt.truncate("1m").alias("minute")
-        ])
-        .group_by("minute")
-        .agg(pl.count().alias("public_transport_activity"))
-    )
-
-    # Avinor: flight delays (count delayed flights)
-    avinor = (
-        df.filter(pl.col("source") == "avinor")
-        .group_by("minute")
-        .agg(
-            # Count flights where status indicates delay or metric_value is not null
-            pl.count().alias("total_flights"),
-            # For now, we'll use total flights as proxy
-            # (would need to parse status to determine actual delays)
-        )
-        .with_columns([
-            # Using total flights as proxy - in future could parse status
-            pl.col("total_flights").alias("flight_activity")
-        ])
-        .select(["minute", "flight_activity"])
-    )
-
-    # Join all data sources
     combined = weather
-    if bysykkel.height > 0:
+
+    if bysykkel is not None and bysykkel.height > 0:
         combined = combined.join(bysykkel, on="minute", how="left")
     else:
         combined = combined.with_columns(
             [pl.lit(None).alias("bikes_available")])
 
-    if entur_minute.height > 0:
+    if entur_minute is not None and entur_minute.height > 0:
         combined = combined.join(entur_minute, on="minute", how="left")
     else:
         combined = combined.with_columns(
             [pl.lit(None).alias("public_transport_activity")])
 
-    if avinor.height > 0:
+    if avinor is not None and avinor.height > 0:
         combined = combined.join(avinor, on="minute", how="left")
     else:
         combined = combined.with_columns(
@@ -238,10 +263,10 @@ def analyze_weather_impact(
         "interpretation": interpretation,
         "sample_size_minutes": combined.height,
         "data_summary": {
-            "weather_records": weather.height,
-            "bysykkel_records": bysykkel.height if bysykkel.height > 0 else 0,
-            "entur_records": entur_minute.height if entur_minute.height > 0 else 0,
-            "avinor_records": avinor.height if avinor.height > 0 else 0,
+            "weather_records": weather.height if weather is not None else 0,
+            "bysykkel_records": bysykkel.height if (bysykkel is not None and bysykkel.height > 0) else 0,
+            "entur_records": entur_minute.height if (entur_minute is not None and entur_minute.height > 0) else 0,
+            "avinor_records": avinor.height if (avinor is not None and avinor.height > 0) else 0,
         },
     }
 
