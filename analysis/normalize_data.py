@@ -107,16 +107,51 @@ def normalize_entur(df: pl.DataFrame) -> pl.DataFrame:
 
 
 # --- OSLO BYSYKKEL -----------------------------------------------
-def normalize_oslobysykkel(df: pl.DataFrame) -> pl.DataFrame:
-    """Normalize Oslo Bysykkel station status data."""
+def normalize_oslobysykkel(df: pl.DataFrame, station_capacity: dict | None = None) -> pl.DataFrame:
+    """Normalize Oslo Bysykkel station status data.
+
+    Args:
+        df: DataFrame with station_status data
+        station_capacity: Optional dict mapping station_id to capacity
+                          If None, uses num_bikes_available + num_docks_available as capacity
+    """
     # last_reported is Unix timestamp in seconds (i64), convert to datetime
     df = df.with_columns([
         pl.from_epoch(pl.col("last_reported"),
                       time_unit="s").alias("timestamp")
     ])
+
+    # Calculate bikes in use
+    # bikes_in_use = capacity - num_bikes_available (bikes currently rented out)
+    # If capacity dict is provided, use it; otherwise estimate from available data
+    if station_capacity:
+        # Join capacity from station_information
+        capacity_df = pl.DataFrame({
+            "station_id": list(station_capacity.keys()),
+            "capacity": list(station_capacity.values())
+        })
+        df = df.join(capacity_df, on="station_id", how="left")
+        df = df.with_columns([
+            (pl.col("capacity") - pl.col("num_bikes_available"))
+            .alias("bikes_in_use")
+        ])
+    else:
+        # Estimate: bikes_in_use = num_docks_available (bikes that are out = empty docks)
+        # This is an approximation: bikes in use occupy docks when returned
+        # Actually, better: bikes_in_use = total_capacity - bikes_available
+        # But we don't have capacity, so use: bikes_in_use ≈ num_docks_available
+        # (when bikes are returned, they occupy docks, so empty docks = bikes out)
+        df = df.with_columns([
+            pl.col("num_docks_available").alias("bikes_in_use")
+        ])
+
+    # Use bikes_in_use as metric_value
+    # Higher temperature -> more bike usage -> more bikes in use (positive correlation expected)
     return df.select([
         pl.col("station_id").alias("location"),
-        pl.col("num_bikes_available").alias("metric_value"),
+        pl.col("bikes_in_use").cast(
+            pl.Float64, strict=False).alias("metric_value"),
+        pl.col("num_bikes_available"),
         pl.col("num_docks_available"),
         pl.col("is_renting"),
         pl.col("is_returning"),
@@ -172,6 +207,7 @@ def run_normalization():
 
     for source, data_dir in DATA_SOURCES.items():
         # Filter files by type for each source
+        station_capacity = None  # Initialize for oslobysykkel
         if source == "entur":
             # Only vehicle-positions files have the required columns
             parquet_files = get_all_parquet_files(
@@ -180,6 +216,32 @@ def run_normalization():
             # Only station_status files have the required columns
             parquet_files = get_all_parquet_files(
                 data_dir, "*station_status*.parquet")
+
+            # Load station capacity from station_information files
+            station_capacity = {}
+            info_files = get_all_parquet_files(
+                data_dir, "*station_information*.parquet")
+            if info_files:
+                # Use the most recent station_information file
+                # (capacity doesn't change often)
+                latest_info = max(info_files, key=os.path.getmtime)
+                try:
+                    info_df = pl.read_parquet(latest_info)
+                    if ("station_id" in info_df.columns and
+                            "capacity" in info_df.columns):
+                        # Create mapping: station_id -> capacity
+                        for row in info_df.iter_rows(named=True):
+                            station_capacity[row["station_id"]] = (
+                                row["capacity"])
+                        print(
+                            f"  Loaded capacity for {len(station_capacity)} "
+                            f"stations from {os.path.basename(latest_info)}")
+                except Exception as e:
+                    print(
+                        f"  Warning: Could not load station capacity: {e}")
+                    station_capacity = None
+            else:
+                station_capacity = None
         elif source == "vegvesen":
             # Only weather_data files have the required columns
             parquet_files = get_all_parquet_files(
@@ -200,7 +262,12 @@ def run_normalization():
         for parquet_file in parquet_files:
             try:
                 df = pl.read_parquet(parquet_file)
-                df_norm = NORMALIZERS[source](df)
+                # Pass station_capacity to oslobysykkel normalizer
+                if source == "oslobysykkel" and station_capacity:
+                    df_norm = NORMALIZERS[source](
+                        df, station_capacity=station_capacity)
+                else:
+                    df_norm = NORMALIZERS[source](df)
 
                 if df_norm.height > 0:
                     all_normalized.append(df_norm)

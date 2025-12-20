@@ -137,7 +137,9 @@ def analyze_weather_impact(
                 f"Warning: metric_value column not found. Available columns: {vegvesen_df.columns}")
             weather = None
 
-    # Oslo Bysykkel: average bikes available
+    # Oslo Bysykkel: total bikes in use across all stations
+    # metric_value now represents bikes_in_use (total_capacity - bikes_available)
+    # Higher temperature -> more bike usage -> more bikes in use (positive correlation expected)
     bysykkel = None
     if "oslobysykkel" in combined_by_source:
         oslobysykkel_df = combined_by_source["oslobysykkel"]
@@ -153,32 +155,34 @@ def analyze_weather_impact(
                 .alias("minute"),
                 pl.col("metric_value")
                 .cast(pl.Float64, strict=False)
-                .alias("bikes")
+                .alias("bikes_in_use")
             ])
-            .filter(pl.col("bikes").is_not_null())
+            .filter(pl.col("bikes_in_use").is_not_null())
             .group_by("minute")
-            .agg(pl.col("bikes").mean().alias("bikes_available"))
+            .agg(pl.col("bikes_in_use").sum().alias("bikes_in_use"))
         )
         print(f"Oslo Bysykkel aggregated: {bysykkel.height} time buckets")
         if bysykkel.height > 0:
             print(
                 f"Bysykkel minute range: {bysykkel.select([pl.col('minute').min().alias('min_minute'), pl.col('minute').max().alias('max_minute')])}")
 
-    # Entur: public transport activity (count of vehicles in Oslo area)
+    # Entur: public transport activity (count of vehicles)
+    # Note: Entur covers all of Norway, not just Oslo
+    # Options: 1) Filter to Oslo bbox (small dataset), 2) Use all Norway data
     entur_minute = None
     if "entur" in combined_by_source:
         entur_df = combined_by_source["entur"]
-        print(f"Entur raw data: {entur_df.height} records")
+        print(f"Entur raw data: {entur_df.height:,} records")
         print(f"Entur columns: {entur_df.columns}")
 
-        # Filter by city bounding box
+        # Use all valid Norwegian coordinates (not just Oslo)
+        # This gives much more data for correlation analysis
+        # Oslo Bysykkel remains Oslo-only as it's a local system
         entur_df = entur_df.filter(
-            (pl.col("lat") >= city_bbox["lat_min"])
-            & (pl.col("lat") <= city_bbox["lat_max"])
-            & (pl.col("lon") >= city_bbox["lon_min"])
-            & (pl.col("lon") <= city_bbox["lon_max"])
+            (pl.col("lat") >= 58) & (pl.col("lat") <= 71) &
+            (pl.col("lon") >= 4) & (pl.col("lon") <= 31)
         )
-        print(f"Entur after bbox filter: {entur_df.height} records")
+        print(f"Entur using all Norway data: {entur_df.height:,} records")
 
         if entur_df.height > 0:
             # Check timestamp range
