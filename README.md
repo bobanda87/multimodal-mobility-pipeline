@@ -19,7 +19,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-This will install all required packages for all collectors and the normalizer.
+This will install all required packages for all collectors and the analysis tools.
 
 ## Running Collectors
 
@@ -107,9 +107,29 @@ All collectors gather data every **3 minutes** (180 seconds) for easier data com
 To normalize collected data, use:
 
 ```bash
-cd normalizer
+cd analysis
 python3 normalize_data.py
 ```
+
+This will process all collected parquet files and create normalized versions in the `normalized_data/` directory.
+
+## Data Analysis
+
+### Weather Impact Analysis
+
+Analyze the correlation between weather conditions and transportation systems:
+
+```bash
+cd analysis
+python3 analyze_weather_impact.py
+```
+
+This analysis examines:
+- **Oslo Bysykkel**: Correlation between temperature and bike availability
+- **Public Transport (Entur)**: Correlation between temperature and vehicle activity in Oslo area
+- **Aviation (Avinor)**: Correlation between temperature and flight activity
+
+The analysis uses normalized data and provides correlation coefficients and interpretations.
 
 ## Project Structure
 
@@ -119,7 +139,7 @@ phdproject/
 ├── entur/               # Entur collector
 ├── oslobysykkel/        # Oslo Bysykkel collector
 ├── vegvesen/            # Vegvesen collector
-├── normalizer/          # Data normalization
+├── analysis/            # Data normalization and analysis
 ├── logs/                # Log files (created automatically)
 └── run_all_collectors.sh # Script to run all collectors
 ```

@@ -1,4 +1,4 @@
-# Universal requirements for all data collectors and normalizer
+# Universal requirements for all data collectors and analysis tools
 
 # Core dependencies
 requests
