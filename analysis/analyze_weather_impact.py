@@ -101,7 +101,11 @@ def analyze_weather_impact(
             weather = (
                 vegvesen_df
                 .with_columns([
-                    pl.col("timestamp").dt.truncate("1m").alias("minute"),
+                    # Convert to UTC and truncate to ensure consistent timezone
+                    pl.col("timestamp")
+                    .dt.replace_time_zone("UTC")
+                    .dt.truncate("1m")
+                    .alias("minute"),
                     # Try to parse metric_value as float (it might be string)
                     pl.col("metric_value")
                     .cast(pl.Float64, strict=False)
@@ -137,7 +141,11 @@ def analyze_weather_impact(
         bysykkel = (
             oslobysykkel_df
             .with_columns([
-                pl.col("timestamp").dt.truncate("1m").alias("minute"),
+                # Ensure UTC timezone for consistent join
+                pl.col("timestamp")
+                .dt.replace_time_zone("UTC")
+                .dt.truncate("1m")
+                .alias("minute"),
                 pl.col("metric_value")
                 .cast(pl.Float64, strict=False)
                 .alias("bikes")
@@ -162,7 +170,11 @@ def analyze_weather_impact(
             entur_minute = (
                 entur_df
                 .with_columns([
-                    pl.col("timestamp").dt.truncate("1m").alias("minute")
+                    # Ensure UTC timezone for consistent join
+                    pl.col("timestamp")
+                    .dt.replace_time_zone("UTC")
+                    .dt.truncate("1m")
+                    .alias("minute")
                 ])
                 .group_by("minute")
                 .agg(pl.len().alias("public_transport_activity"))
@@ -175,7 +187,11 @@ def analyze_weather_impact(
         avinor = (
             avinor_df
             .with_columns([
-                pl.col("timestamp").dt.truncate("1m").alias("minute")
+                # Ensure UTC timezone for consistent join
+                pl.col("timestamp")
+                .dt.replace_time_zone("UTC")
+                .dt.truncate("1m")
+                .alias("minute")
             ])
             .group_by("minute")
             .agg(pl.len().alias("flight_activity"))
