@@ -1,16 +1,10 @@
-import os
 import time
-import json
 import requests
 import pandas as pd
 from datetime import datetime
 from google.transit import gtfs_realtime_pb2
+from utils.s3_upload import save_json_to_s3, save_parquet_to_s3
 
-# Automatically determine BASE_DIR: use mnt path on server, local path otherwise
-if os.path.exists("/mnt/volume_ams3_01"):
-    BASE_DIR = "/mnt/volume_ams3_01/entur_data"
-else:
-BASE_DIR = "entur_data"
 OPERATORS = [
     "AKT", "ATB", "AVI", "BNR", "BRA", "FIN", "FLT", "GJB", "GOA", "INN",
     "KOL", "MOR", "NBU", "NOR", "NSB", "OST", "RUT", "SJN", "SKY", "SOF",
@@ -22,19 +16,6 @@ FEEDS = {
     "alerts": "alerts"
 }
 HEADERS = {"ET-Client-Name": "entur-multimodal-analytics"}
-os.makedirs(BASE_DIR, exist_ok=True)
-
-
-def get_daily_dir():
-    today = datetime.now().strftime("%Y-%m-%d")
-    daily_dir = os.path.join(BASE_DIR, today)
-    os.makedirs(daily_dir, exist_ok=True)
-    return daily_dir
-
-
-def save_json(data, path):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def fetch_entur_data(operator, feed_type):
@@ -47,14 +28,6 @@ def fetch_entur_data(operator, feed_type):
     except Exception as e:
         print(f"{operator} {feed_type} -> Connection error: {e}")
         return None
-
-    daily_dir = get_daily_dir()
-    timestamp = datetime.now().strftime("%H%M%S")
-    filename_pb = os.path.join(
-        daily_dir, f"{operator}_{feed_type}_{timestamp}.pb")
-
-    with open(filename_pb, "wb") as f:
-        f.write(response.content)
 
     feed = gtfs_realtime_pb2.FeedMessage()
     feed.ParseFromString(response.content)
@@ -90,15 +63,18 @@ def fetch_entur_data(operator, feed_type):
             entry["effect"] = str(alert.effect)
         decoded.append(entry)
 
-    json_filename = filename_pb.replace(".pb", ".json")
-    save_json(decoded, json_filename)
-
+    # Save directly to S3
     if decoded:
-        df = pd.DataFrame(decoded)
-        parquet_filename = json_filename.replace(".json", ".parquet")
-        df.to_parquet(parquet_filename, index=False)
+        today = datetime.now().strftime("%Y-%m-%d")
+        timestamp = datetime.now().strftime("%H%M%S")
+        json_s3_key = f"entur/{today}/{operator}_{feed_type}_{timestamp}.json"
+        parquet_s3_key = f"entur/{today}/{operator}_{feed_type}_{timestamp}.parquet"
 
-    print(f"{operator} {feed_type}: {len(decoded)} records saved.")
+        df = pd.DataFrame(decoded)
+        save_json_to_s3(decoded, json_s3_key)
+        save_parquet_to_s3(df, parquet_s3_key)
+
+    print(f"{operator} {feed_type}: {len(decoded)} records saved to S3.")
     return decoded
 
 

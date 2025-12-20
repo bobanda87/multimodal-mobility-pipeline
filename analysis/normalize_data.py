@@ -2,6 +2,7 @@ import os
 from glob import glob
 import polars as pl
 from datetime import datetime
+from utils.s3_upload import save_parquet_to_s3
 
 # Automatically determine base path: use mnt path on server, local path otherwise
 # Get the project root directory (parent of analysis folder)
@@ -10,7 +11,6 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
 if os.path.exists("/mnt/volume_ams3_01"):
     BASE_PATH = "/mnt/volume_ams3_01"
-    OUTPUT_DIR = os.path.join(PROJECT_ROOT, "normalized_data")
     DATA_SOURCES = {
         "avinor": f"{BASE_PATH}/avinor_data",
         "entur": f"{BASE_PATH}/entur_data",
@@ -19,15 +19,12 @@ if os.path.exists("/mnt/volume_ams3_01"):
     }
 else:
     BASE_PATH = None
-    OUTPUT_DIR = os.path.join(PROJECT_ROOT, "normalized_data")
     DATA_SOURCES = {
         "avinor": os.path.join(PROJECT_ROOT, "avinor", "avinor_data"),
         "entur": os.path.join(PROJECT_ROOT, "entur", "entur_data"),
         "oslobysykkel": os.path.join(PROJECT_ROOT, "oslobysykkel", "oslobysykkel_data"),
         "vegvesen": os.path.join(PROJECT_ROOT, "vegvesen", "vegvesen_data"),
     }
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def get_latest_parquet(data_dir, pattern="*.parquet"):
@@ -203,7 +200,6 @@ NORMALIZERS = {
 def run_normalization():
     """Run normalization for all available data sources."""
     print("Starting normalization process...\n")
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     for source, data_dir in DATA_SOURCES.items():
         # Filter files by type for each source
@@ -300,13 +296,19 @@ def run_normalization():
 
             # Combine all normalized dataframes
             combined_df = pl.concat(normalized_aligned)
-            out_path = os.path.join(
-                OUTPUT_DIR,
-                f"{source}_normalized_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.parquet"
-            )
-            combined_df.write_parquet(out_path)
+
+            # Save directly to S3
+            today = datetime.now().strftime("%Y-%m-%d")
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            parquet_s3_key = f"normalized/{today}/{source}_normalized_{timestamp}.parquet"
+
+            # Convert Polars DataFrame to pandas for S3 upload
+            import pandas as pd
+            df_pandas = combined_df.to_pandas()
+            save_parquet_to_s3(df_pandas, parquet_s3_key)
+
             print(
-                f"\n{source}: Combined and saved -> {out_path} "
+                f"\n{source}: Combined and saved to S3 -> {parquet_s3_key} "
                 f"({combined_df.height} total records from {processed} files)\n")
         else:
             print(

@@ -1,0 +1,1 @@
+# Vegvesen collector package

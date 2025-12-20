@@ -19,3 +19,6 @@ fastparquet
 
 # Environment variables (for Vegvesen)
 python-dotenv
+
+# AWS S3 support
+boto3

@@ -1,16 +1,16 @@
 import os
 import time
-import json
 import requests
 import pandas as pd
 from datetime import datetime
+from dotenv import load_dotenv
+from pathlib import Path
+from utils.s3_upload import save_json_to_s3, save_parquet_to_s3
 
-# Automatically determine BASE_DIR: use mnt path on server, local path otherwise
-if os.path.exists("/mnt/volume_ams3_01"):
-    BASE_DIR = "/mnt/volume_ams3_01/oslobysykkel_data"
-else:
-BASE_DIR = "oslobysykkel_data"
-os.makedirs(BASE_DIR, exist_ok=True)
+# Load .env file from project root
+PROJECT_ROOT = Path(__file__).parent.parent
+ENV_FILE = PROJECT_ROOT / ".env"
+load_dotenv(dotenv_path=ENV_FILE)
 
 # GBFS base URLs
 GBFS_BASE = "https://gbfs.urbansharing.com/oslobysykkel.no"
@@ -22,20 +22,6 @@ ENDPOINTS = {
 
 # Identification header (mandatory)
 CLIENT_IDENTIFIER = os.getenv("BYSYKKEL_CLIENT", "traffic-citymonitor")
-
-
-def get_daily_dir():
-    """Return or create directory for today's data."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    daily_dir = os.path.join(BASE_DIR, today)
-    os.makedirs(daily_dir, exist_ok=True)
-    return daily_dir
-
-
-def save_json(data, path):
-    """Save JSON data to a file."""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def fetch_gbfs_data(feed_name, url):
@@ -51,12 +37,6 @@ def fetch_gbfs_data(feed_name, url):
         return
 
     data = response.json()
-    daily_dir = get_daily_dir()
-    timestamp = datetime.now().strftime("%H%M%S")
-    json_path = os.path.join(daily_dir, f"{feed_name}_{timestamp}.json")
-    parquet_path = json_path.replace(".json", ".parquet")
-
-    save_json(data, json_path)
 
     try:
         # Most GBFS data is under data -> stations or data -> system
@@ -68,8 +48,17 @@ def fetch_gbfs_data(feed_name, url):
             df = pd.json_normalize(data)
 
         df["last_updated"] = data.get("last_updated", None)
-        df.to_parquet(parquet_path, index=False)
-        print(f"{feed_name}: {len(df)} records saved -> {parquet_path}")
+
+        # Save directly to S3
+        today = datetime.now().strftime("%Y-%m-%d")
+        timestamp = datetime.now().strftime("%H%M%S")
+        json_s3_key = f"oslobysykkel/{today}/{feed_name}_{timestamp}.json"
+        parquet_s3_key = f"oslobysykkel/{today}/{feed_name}_{timestamp}.parquet"
+
+        save_json_to_s3(data, json_s3_key)
+        save_parquet_to_s3(df, parquet_s3_key)
+
+        print(f"{feed_name}: {len(df)} records saved to S3")
     except Exception as e:
         print(f"{feed_name} -> Could not convert to parquet: {e}")
 

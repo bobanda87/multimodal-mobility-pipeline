@@ -84,39 +84,35 @@ echo ""
 
 # Start Avinor collector
 echo "Starting Avinor collector..."
-cd "$SCRIPT_DIR/avinor"
-$PYTHON_CMD -u avinor_collect.py > "$SCRIPT_DIR/$AVINOR_LOG" 2>&1 &
+cd "$SCRIPT_DIR"
+PYTHONPATH="$SCRIPT_DIR" $PYTHON_CMD -u avinor/avinor_collect.py > "$AVINOR_LOG" 2>&1 &
 AVINOR_PID=$!
 PIDS+=($AVINOR_PID)
 echo "  Avinor PID: $AVINOR_PID -> $AVINOR_LOG"
-cd "$SCRIPT_DIR"
 
 # Start Entur collector
 echo "Starting Entur collector..."
-cd "$SCRIPT_DIR/entur"
-$PYTHON_CMD -u entur_collect.py > "$SCRIPT_DIR/$ENTUR_LOG" 2>&1 &
+cd "$SCRIPT_DIR"
+PYTHONPATH="$SCRIPT_DIR" $PYTHON_CMD -u entur/entur_collect.py > "$ENTUR_LOG" 2>&1 &
 ENTUR_PID=$!
 PIDS+=($ENTUR_PID)
 echo "  Entur PID: $ENTUR_PID -> $ENTUR_LOG"
-cd "$SCRIPT_DIR"
 
 # Start Oslo Bysykkel collector
 echo "Starting Oslo Bysykkel collector..."
-cd "$SCRIPT_DIR/oslobysykkel"
-$PYTHON_CMD -u oslobysykkel_collect.py > "$SCRIPT_DIR/$OSLOBYKSYKKEL_LOG" 2>&1 &
+cd "$SCRIPT_DIR"
+PYTHONPATH="$SCRIPT_DIR" $PYTHON_CMD -u oslobysykkel/oslobysykkel_collect.py > "$OSLOBYKSYKKEL_LOG" 2>&1 &
 OSLOBYKSYKKEL_PID=$!
 PIDS+=($OSLOBYKSYKKEL_PID)
 echo "  Oslo Bysykkel PID: $OSLOBYKSYKKEL_PID -> $OSLOBYKSYKKEL_LOG"
-cd "$SCRIPT_DIR"
 
 # Start Vegvesen collector
 echo "Starting Vegvesen collector..."
-cd "$SCRIPT_DIR/vegvesen"
-$PYTHON_CMD -u vegvesen_collect.py > "$SCRIPT_DIR/$VEGVESEN_LOG" 2>&1 &
+cd "$SCRIPT_DIR"
+PYTHONPATH="$SCRIPT_DIR" $PYTHON_CMD -u vegvesen/vegvesen_collect.py > "$VEGVESEN_LOG" 2>&1 &
 VEGVESEN_PID=$!
 PIDS+=($VEGVESEN_PID)
 echo "  Vegvesen PID: $VEGVESEN_PID -> $VEGVESEN_LOG"
-cd "$SCRIPT_DIR"
 
 # Save PIDs to file
 printf "%s\n" "${PIDS[@]}" > "$PID_FILE"

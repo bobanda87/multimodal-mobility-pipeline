@@ -1,30 +1,11 @@
-import os
 import time
-import json
 import requests
 import pandas as pd
 from datetime import datetime
 import xml.etree.ElementTree as ET
+from utils.s3_upload import save_json_to_s3, save_parquet_to_s3
 
-# Automatically determine BASE_DIR: use mnt path on server, local path otherwise
-if os.path.exists("/mnt/volume_ams3_01"):
-BASE_DIR = "/mnt/volume_ams3_01/avinor_data"
-else:
-    BASE_DIR = "avinor_data"
 HEADERS = {"User-Agent": "AvinorDataCollector/1.0 (+https://avinor.no)"}
-os.makedirs(BASE_DIR, exist_ok=True)
-
-
-def get_daily_dir():
-    today = datetime.now().strftime("%Y-%m-%d")
-    daily_dir = os.path.join(BASE_DIR, today)
-    os.makedirs(daily_dir, exist_ok=True)
-    return daily_dir
-
-
-def save_json(data, path):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def fetch_airports():
@@ -61,15 +42,18 @@ def fetch_flight_data(airport_code):
         if not flights:
             print(f"{airport_code}: no flights")
             return None
-        daily_dir = get_daily_dir()
+
+        # Save directly to S3
+        today = datetime.now().strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%H%M%S")
-        json_filename = os.path.join(
-            daily_dir, f"{airport_code}_{timestamp}.json")
-        save_json(flights, json_filename)
+        json_s3_key = f"avinor/{today}/{airport_code}_{timestamp}.json"
+        parquet_s3_key = f"avinor/{today}/{airport_code}_{timestamp}.parquet"
+
         df = pd.DataFrame(flights)
-        parquet_filename = json_filename.replace(".json", ".parquet")
-        df.to_parquet(parquet_filename, index=False)
-        print(f"{airport_code}: {len(flights)} flights saved")
+        save_json_to_s3(flights, json_s3_key)
+        save_parquet_to_s3(df, parquet_s3_key)
+
+        print(f"{airport_code}: {len(flights)} flights saved to S3")
         return flights
     except Exception as e:
         print(f"{airport_code}: error {e}")

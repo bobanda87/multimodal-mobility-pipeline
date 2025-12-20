@@ -92,11 +92,83 @@ python3 vegvesen_collect.py
 
 ## Configuration
 
+### Local Storage
+
 All collectors automatically determine where to store data:
 - **Locally**: Data is saved in the `{source}_data/` directory
 - **On server**: Data is saved in the `/mnt/volume_ams3_01/{source}_data/` directory
 
 Collectors automatically detect if they are running on the server (by checking for the existence of the `/mnt/volume_ams3_01` directory).
+
+### S3 Storage
+
+The project supports automatic upload of data files to AWS S3. To enable S3 upload:
+
+#### Step 1: Create AWS Account and S3 Bucket
+
+1. **Create AWS Account** (if you don't have one):
+   - Go to https://aws.amazon.com/ and sign up for a free account
+   - You'll need a credit card, but AWS Free Tier includes 5GB of S3 storage for 12 months
+
+2. **Create S3 Bucket**:
+   - Log in to AWS Console: https://console.aws.amazon.com/
+   - Go to S3 service
+   - Click "Create bucket"
+   - Choose a unique bucket name (e.g., `phdproject-data`)
+   - Select a region (e.g., `eu-north-1` for Stockholm, or choose one closer to you)
+   - Leave other settings as default or configure as needed
+   - Click "Create bucket"
+
+#### Step 2: Create IAM User with S3 Access
+
+1. **Create IAM User**:
+   - Go to IAM service in AWS Console
+   - Click "Users" → "Create user"
+   - Enter username (e.g., `s3-uploader`)
+   - Click "Next"
+
+2. **Attach S3 Policy**:
+   - Select "Attach policies directly"
+   - Search for and select `AmazonS3FullAccess` (or create a custom policy with only PutObject permission for security)
+   - Click "Next" → "Create user"
+
+3. **Create Access Keys**:
+   - Click on the newly created user
+   - Go to "Security credentials" tab
+   - Scroll to "Access keys" section
+   - Click "Create access key"
+   - Select "Application running outside AWS" as use case
+   - Click "Next" → "Create access key"
+   - **IMPORTANT**: Copy both:
+     - **Access key ID** (starts with `AKIA...`)
+     - **Secret access key** (click "Show" to reveal it)
+   - Save these credentials securely - you won't be able to see the secret key again!
+
+#### Step 3: Configure Environment Variables
+
+1. Copy `env.example` to `.env`:
+   ```bash
+   cp env.example .env
+   ```
+
+2. Edit `.env` and add your AWS credentials:
+   ```bash
+   AWS_ACCESS_KEY_ID=AKIA...your_access_key_id
+   AWS_SECRET_ACCESS_KEY=your_secret_access_key
+   AWS_REGION=eu-north-1  # Use the region where you created your bucket
+   S3_BUCKET_NAME=phdproject-data  # Your bucket name
+   S3_JSON_PATH=data/json
+   S3_PARQUET_PATH=data/parquet
+   ```
+
+#### Step 4: Verify Configuration
+
+Data files are automatically uploaded to S3:
+- **JSON files** → `s3://{bucket}/{S3_JSON_PATH}/{source}/{date}/filename.json`
+- **Parquet files** → `s3://{bucket}/{S3_PARQUET_PATH}/{source}/{date}/filename.parquet`
+- **Normalized data** → `s3://{bucket}/{S3_PARQUET_PATH}/normalized/{date}/filename.parquet`
+
+**Note**: If S3 credentials are not configured, the collectors will continue to work normally but will skip S3 uploads (you'll see warning messages in the logs).
 
 ## Collection Intervals
 
