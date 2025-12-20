@@ -109,11 +109,10 @@ def normalize_entur(df: pl.DataFrame) -> pl.DataFrame:
 # --- OSLO BYSYKKEL -----------------------------------------------
 def normalize_oslobysykkel(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize Oslo Bysykkel station status data."""
+    # last_reported is Unix timestamp in seconds (i64), convert to datetime
     df = df.with_columns([
-        pl.col("last_reported").cast(pl.Int64).alias("ts_int")
-    ])
-    df = df.with_columns([
-        (pl.col("ts_int") * 1_000_000_000).cast(pl.Datetime).alias("timestamp")
+        pl.from_epoch(pl.col("last_reported"),
+                      time_unit="s").alias("timestamp")
     ])
     return df.select([
         pl.col("station_id").alias("location"),

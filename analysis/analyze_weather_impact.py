@@ -126,7 +126,7 @@ def analyze_weather_impact(
                     f"Weather data aggregated: {weather.height} time buckets")
                 if weather.height > 0:
                     print(
-                        f"Weather minute range: {weather.select([pl.col('minute').min(), pl.col('minute').max()])}")
+                        f"Weather minute range: {weather.select([pl.col('minute').min().alias('min_minute'), pl.col('minute').max().alias('max_minute')])}")
             else:
                 print("Warning: No valid temperature values after filtering")
                 print(
@@ -162,7 +162,7 @@ def analyze_weather_impact(
         print(f"Oslo Bysykkel aggregated: {bysykkel.height} time buckets")
         if bysykkel.height > 0:
             print(
-                f"Bysykkel minute range: {bysykkel.select([pl.col('minute').min(), pl.col('minute').max()])}")
+                f"Bysykkel minute range: {bysykkel.select([pl.col('minute').min().alias('min_minute'), pl.col('minute').max().alias('max_minute')])}")
 
     # Entur: public transport activity (count of vehicles in Oslo area)
     entur_minute = None
@@ -186,7 +186,8 @@ def analyze_weather_impact(
                 pl.col("timestamp").min().alias("min_ts"),
                 pl.col("timestamp").max().alias("max_ts")
             ])
-            print(f"Entur timestamp range: {timestamp_range}")
+            print(f"Entur timestamp range:")
+            print(timestamp_range)
 
             entur_minute = (
                 entur_df
@@ -203,7 +204,7 @@ def analyze_weather_impact(
             print(f"Entur aggregated: {entur_minute.height} time buckets")
             if entur_minute.height > 0:
                 print(
-                    f"Entur minute range: {entur_minute.select([pl.col('minute').min(), pl.col('minute').max()])}")
+                    f"Entur minute range: {entur_minute.select([pl.col('minute').min().alias('min_minute'), pl.col('minute').max().alias('max_minute')])}")
 
     # Avinor: flight activity
     avinor = None
