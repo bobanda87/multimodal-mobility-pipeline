@@ -14,7 +14,7 @@ load_dotenv()
 if os.path.exists("/mnt/volume_ams3_01"):
     BASE_DIR = "/mnt/volume_ams3_01/vegvesen_data"
 else:
-    BASE_DIR = "vegvesen_data"
+BASE_DIR = "vegvesen_data"
 os.makedirs(BASE_DIR, exist_ok=True)
 
 USERNAME = os.getenv("VEGVESEN_USER")

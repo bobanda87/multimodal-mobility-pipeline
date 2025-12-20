@@ -4,9 +4,13 @@ import polars as pl
 from datetime import datetime
 
 # Automatically determine base path: use mnt path on server, local path otherwise
+# Get the project root directory (parent of analysis folder)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+
 if os.path.exists("/mnt/volume_ams3_01"):
     BASE_PATH = "/mnt/volume_ams3_01"
-    OUTPUT_DIR = "normalized_data"
+    OUTPUT_DIR = os.path.join(PROJECT_ROOT, "normalized_data")
     DATA_SOURCES = {
         "avinor": f"{BASE_PATH}/avinor_data",
         "entur": f"{BASE_PATH}/entur_data",
@@ -15,12 +19,12 @@ if os.path.exists("/mnt/volume_ams3_01"):
     }
 else:
     BASE_PATH = None
-    OUTPUT_DIR = "normalized_data"
+    OUTPUT_DIR = os.path.join(PROJECT_ROOT, "normalized_data")
     DATA_SOURCES = {
-        "avinor": "../avinor/avinor_data",
-        "entur": "../entur/entur_data",
-        "oslobysykkel": "../oslobysykkel/oslobysykkel_data",
-        "vegvesen": "../vegvesen/vegvesen_data",
+        "avinor": os.path.join(PROJECT_ROOT, "avinor", "avinor_data"),
+        "entur": os.path.join(PROJECT_ROOT, "entur", "entur_data"),
+        "oslobysykkel": os.path.join(PROJECT_ROOT, "oslobysykkel", "oslobysykkel_data"),
+        "vegvesen": os.path.join(PROJECT_ROOT, "vegvesen", "vegvesen_data"),
     }
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)

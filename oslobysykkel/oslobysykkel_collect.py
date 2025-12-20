@@ -9,7 +9,7 @@ from datetime import datetime
 if os.path.exists("/mnt/volume_ams3_01"):
     BASE_DIR = "/mnt/volume_ams3_01/oslobysykkel_data"
 else:
-    BASE_DIR = "oslobysykkel_data"
+BASE_DIR = "oslobysykkel_data"
 os.makedirs(BASE_DIR, exist_ok=True)
 
 # GBFS base URLs

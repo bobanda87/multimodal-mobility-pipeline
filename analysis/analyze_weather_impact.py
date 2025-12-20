@@ -28,15 +28,24 @@ def analyze_weather_impact(
             "lon_max": 10.85,
         }
 
-    # normalized_data is always in the repo, relative to this script
+    # normalized_data is always in the project root, not in analysis folder
     if not os.path.isabs(normalized_dir):
-        normalized_dir = os.path.join(
-            os.path.dirname(__file__), normalized_dir)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # Go up one level from analysis/
+        project_root = os.path.dirname(script_dir)
+        normalized_dir = os.path.join(project_root, normalized_dir)
+
+    # Ensure directory exists
+    Path(normalized_dir).mkdir(parents=True, exist_ok=True)
 
     files = list(Path(normalized_dir).glob("*_normalized_*.parquet"))
     if not files:
+        # Provide helpful error message
+        abs_path = os.path.abspath(normalized_dir)
         raise RuntimeError(
-            f"No normalized parquet files found in {normalized_dir}")
+            f"No normalized parquet files found in {abs_path}\n"
+            f"Please run 'python normalize_data.py' first to create normalized files."
+        )
 
     print(f"Loading {len(files)} normalized files...")
     dfs = []
