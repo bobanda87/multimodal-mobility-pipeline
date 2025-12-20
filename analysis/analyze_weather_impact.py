@@ -124,6 +124,9 @@ def analyze_weather_impact(
                 )
                 print(
                     f"Weather data aggregated: {weather.height} time buckets")
+                if weather.height > 0:
+                    print(
+                        f"Weather minute range: {weather.select([pl.col('minute').min(), pl.col('minute').max()])}")
             else:
                 print("Warning: No valid temperature values after filtering")
                 print(
@@ -138,6 +141,8 @@ def analyze_weather_impact(
     bysykkel = None
     if "oslobysykkel" in combined_by_source:
         oslobysykkel_df = combined_by_source["oslobysykkel"]
+        print(f"Oslo Bysykkel raw data: {oslobysykkel_df.height} records")
+
         bysykkel = (
             oslobysykkel_df
             .with_columns([
@@ -154,11 +159,18 @@ def analyze_weather_impact(
             .group_by("minute")
             .agg(pl.col("bikes").mean().alias("bikes_available"))
         )
+        print(f"Oslo Bysykkel aggregated: {bysykkel.height} time buckets")
+        if bysykkel.height > 0:
+            print(
+                f"Bysykkel minute range: {bysykkel.select([pl.col('minute').min(), pl.col('minute').max()])}")
 
     # Entur: public transport activity (count of vehicles in Oslo area)
     entur_minute = None
     if "entur" in combined_by_source:
         entur_df = combined_by_source["entur"]
+        print(f"Entur raw data: {entur_df.height} records")
+        print(f"Entur columns: {entur_df.columns}")
+
         # Filter by city bounding box
         entur_df = entur_df.filter(
             (pl.col("lat") >= city_bbox["lat_min"])
@@ -166,7 +178,16 @@ def analyze_weather_impact(
             & (pl.col("lon") >= city_bbox["lon_min"])
             & (pl.col("lon") <= city_bbox["lon_max"])
         )
+        print(f"Entur after bbox filter: {entur_df.height} records")
+
         if entur_df.height > 0:
+            # Check timestamp range
+            timestamp_range = entur_df.select([
+                pl.col("timestamp").min().alias("min_ts"),
+                pl.col("timestamp").max().alias("max_ts")
+            ])
+            print(f"Entur timestamp range: {timestamp_range}")
+
             entur_minute = (
                 entur_df
                 .with_columns([
@@ -179,6 +200,10 @@ def analyze_weather_impact(
                 .group_by("minute")
                 .agg(pl.len().alias("public_transport_activity"))
             )
+            print(f"Entur aggregated: {entur_minute.height} time buckets")
+            if entur_minute.height > 0:
+                print(
+                    f"Entur minute range: {entur_minute.select([pl.col('minute').min(), pl.col('minute').max()])}")
 
     # Avinor: flight activity
     avinor = None
@@ -222,39 +247,70 @@ def analyze_weather_impact(
         combined = combined.with_columns(
             [pl.lit(None).alias("flight_activity")])
 
-    # Fill nulls with 0 for correlation calculation
-    combined = combined.fill_null(0)
-
-    # Calculate correlations
+    # Calculate correlations - only use rows where both values exist
     correlations = {}
     if combined.height > 1:
         if "bikes_available" in combined.columns:
-            corr_bikes = combined.select(
-                pl.corr("road_temperature", "bikes_available")
-            )[0, 0]
-            correlations["temperature_vs_bysykkel"] = (
-                corr_bikes if corr_bikes is not None else 0.0
+            # Only use rows where both temperature and bikes data exist
+            bikes_data = combined.filter(
+                (pl.col("road_temperature").is_not_null())
+                & (pl.col("bikes_available").is_not_null())
             )
+            print(
+                f"Bikes data overlap: {bikes_data.height} records with both temperature and bikes")
+            if bikes_data.height > 1:
+                corr_bikes = bikes_data.select(
+                    pl.corr("road_temperature", "bikes_available")
+                )[0, 0]
+                # Check for NaN (NaN != NaN is True, so we check if equal to itself)
+                correlations["temperature_vs_bysykkel"] = (
+                    corr_bikes if corr_bikes is not None and (
+                        corr_bikes == corr_bikes) else None
+                )
+            else:
+                correlations["temperature_vs_bysykkel"] = None
         else:
             correlations["temperature_vs_bysykkel"] = None
 
         if "public_transport_activity" in combined.columns:
-            corr_transport = combined.select(
-                pl.corr("road_temperature", "public_transport_activity")
-            )[0, 0]
-            correlations["temperature_vs_public_transport"] = (
-                corr_transport if corr_transport is not None else 0.0
+            # Only use rows where both temperature and transport data exist
+            transport_data = combined.filter(
+                (pl.col("road_temperature").is_not_null())
+                & (pl.col("public_transport_activity").is_not_null())
             )
+            print(
+                f"Transport data overlap: {transport_data.height} records with both temperature and transport")
+            if transport_data.height > 1:
+                corr_transport = transport_data.select(
+                    pl.corr("road_temperature", "public_transport_activity")
+                )[0, 0]
+                # Check for NaN (NaN != NaN is True, so we check if equal to itself)
+                correlations["temperature_vs_public_transport"] = (
+                    corr_transport if corr_transport is not None and (
+                        corr_transport == corr_transport) else None
+                )
+            else:
+                correlations["temperature_vs_public_transport"] = None
         else:
             correlations["temperature_vs_public_transport"] = None
 
         if "flight_activity" in combined.columns:
-            corr_flights = combined.select(
-                pl.corr("road_temperature", "flight_activity")
-            )[0, 0]
-            correlations["temperature_vs_flight_activity"] = (
-                corr_flights if corr_flights is not None else 0.0
+            # Only use rows where both temperature and flight data exist
+            flight_data = combined.filter(
+                (pl.col("road_temperature").is_not_null())
+                & (pl.col("flight_activity").is_not_null())
             )
+            if flight_data.height > 1:
+                corr_flights = flight_data.select(
+                    pl.corr("road_temperature", "flight_activity")
+                )[0, 0]
+                # Check for NaN (NaN != NaN is True, so we check if equal to itself)
+                correlations["temperature_vs_flight_activity"] = (
+                    corr_flights if corr_flights is not None and (
+                        corr_flights == corr_flights) else None
+                )
+            else:
+                correlations["temperature_vs_flight_activity"] = None
         else:
             correlations["temperature_vs_flight_activity"] = None
     else:

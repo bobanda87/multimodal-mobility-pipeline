@@ -6,7 +6,7 @@ pandas
 pyarrow
 
 # Data processing
-polars
+polars[rtcompat]
 
 # GTFS-RT support (for Entur and Oslo Bysykkel)
 gtfs-realtime-bindings

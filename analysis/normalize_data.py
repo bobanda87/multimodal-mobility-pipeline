@@ -91,8 +91,9 @@ def normalize_avinor(df: pl.DataFrame) -> pl.DataFrame:
 # --- ENTUR -------------------------------------------------------
 def normalize_entur(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize Entur vehicle position data into a unified schema."""
+    # Timestamp is Unix timestamp in seconds (i64), convert to datetime
     df = df.with_columns([
-        pl.col("timestamp").cast(pl.Datetime),
+        pl.from_epoch(pl.col("timestamp"), time_unit="s").alias("timestamp"),
         pl.col("latitude").cast(pl.Float64),
         pl.col("longitude").cast(pl.Float64),
     ])
