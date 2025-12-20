@@ -92,21 +92,43 @@ def analyze_weather_impact(
     weather = None
     if "vegvesen" in combined_by_source:
         vegvesen_df = combined_by_source["vegvesen"]
-        weather = (
-            vegvesen_df
-            .with_columns([
-                pl.col("timestamp").dt.truncate("1m").alias("minute"),
-                pl.col("metric_value")
-                .cast(pl.Float64, strict=False)
-                .alias("temperature")
-            ])
-            .filter(
-                (pl.col("temperature").is_not_null())
-                & (pl.col("temperature").is_finite())
+        print(f"Vegvesen data loaded: {vegvesen_df.height} records")
+        print(f"Vegvesen columns: {vegvesen_df.columns}")
+
+        # Check if we have metric_value column
+        if "metric_value" in vegvesen_df.columns:
+            # Try to extract temperature - handle string values
+            weather = (
+                vegvesen_df
+                .with_columns([
+                    pl.col("timestamp").dt.truncate("1m").alias("minute"),
+                    # Try to parse metric_value as float (it might be string)
+                    pl.col("metric_value")
+                    .cast(pl.Float64, strict=False)
+                    .alias("temperature")
+                ])
+                .filter(
+                    (pl.col("temperature").is_not_null())
+                    & (pl.col("temperature").is_finite())
+                    & (pl.col("temperature") != 0)  # Filter out zeros
+                )
             )
-            .group_by("minute")
-            .agg(pl.col("temperature").mean().alias("road_temperature"))
-        )
+
+            if weather.height > 0:
+                weather = weather.group_by("minute").agg(
+                    pl.col("temperature").mean().alias("road_temperature")
+                )
+                print(
+                    f"Weather data aggregated: {weather.height} time buckets")
+            else:
+                print("Warning: No valid temperature values after filtering")
+                print(
+                    f"Sample metric_value values: {vegvesen_df.select('metric_value').head(5)}")
+                weather = None
+        else:
+            print(
+                f"Warning: metric_value column not found. Available columns: {vegvesen_df.columns}")
+            weather = None
 
     # Oslo Bysykkel: average bikes available
     bysykkel = None
@@ -143,7 +165,7 @@ def analyze_weather_impact(
                     pl.col("timestamp").dt.truncate("1m").alias("minute")
                 ])
                 .group_by("minute")
-                .agg(pl.count().alias("public_transport_activity"))
+                .agg(pl.len().alias("public_transport_activity"))
             )
 
     # Avinor: flight activity
@@ -156,7 +178,7 @@ def analyze_weather_impact(
                 pl.col("timestamp").dt.truncate("1m").alias("minute")
             ])
             .group_by("minute")
-            .agg(pl.count().alias("flight_activity"))
+            .agg(pl.len().alias("flight_activity"))
             .select(["minute", "flight_activity"])
         )
 

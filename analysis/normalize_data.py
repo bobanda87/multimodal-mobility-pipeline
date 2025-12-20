@@ -128,15 +128,30 @@ def normalize_oslobysykkel(df: pl.DataFrame) -> pl.DataFrame:
 # --- VEGVESEN ----------------------------------------------------
 def normalize_vegvesen(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize Vegvesen weather data."""
+    # First, explode physicalQuantity list to get individual measurements
+    df = df.explode("ns10:physicalQuantity")
+
     df = df.with_columns([
         pl.col("ns10:measurementTimeDefault.ns10:timeValue")
         .str.to_datetime(format="%Y-%m-%dT%H:%M:%S%.f%z", strict=False)
         .alias("timestamp")
     ])
+
+    # Extract temperature from nested structure
+    # Try road surface temperature first
+    df = df.with_columns([
+        pl.col("ns10:physicalQuantity.ns10:physicalQuantity.ns10:basicData.ns10:roadSurfaceConditionMeasurements.roadSurfaceTemperature.temperature")
+        .alias("temperature")
+    ])
+
+    # Filter to only rows with temperature data
+    df = df.filter(pl.col("temperature").is_not_null())
+
     return df.select([
         pl.col("ns10:measurementSiteReference.@id").alias("location"),
-        pl.col("ns10:physicalQuantity").alias("metric_name"),
-        pl.col("ns10:physicalQuantity.ns10:physicalQuantity.ns10:basicData.ns10:roadSurfaceConditionMeasurements.roadSurfaceTemperature.temperature").alias("metric_value"),
+        pl.col("ns10:physicalQuantity.@index").alias("metric_name"),
+        pl.col("temperature").cast(
+            pl.Float64, strict=False).alias("metric_value"),
         pl.col("timestamp"),
         pl.lit("vegvesen").alias("source"),
     ])
