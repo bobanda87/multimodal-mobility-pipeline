@@ -4,6 +4,7 @@ S3 upload utility functions for JSON and Parquet files.
 import os
 import json
 import io
+import fnmatch
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 from dotenv import load_dotenv
@@ -216,3 +217,235 @@ def save_parquet_to_s3(df, s3_key: str) -> bool:
     except Exception as e:
         print(f"Unexpected error saving Parquet to S3: {e}")
         return False
+
+
+def list_parquet_files_from_s3(source: str, pattern: str = "*.parquet", exclude_normalized: bool = True, with_metadata: bool = False, date_prefix: str | None = None) -> list:
+    """
+    List Parquet files from S3 for a specific source.
+
+    Args:
+        source: Data source name (e.g., "avinor", "entur", "oslobysykkel", "vegvesen")
+        pattern: Optional pattern to filter files (e.g., "*vehicle-positions*.parquet")
+        exclude_normalized: If True, exclude files from normalized/ directory
+        with_metadata: If True, return list of dicts with 'key' and 'last_modified', 
+                      otherwise return list of keys only
+        date_prefix: If set (e.g. "2026-01-29"), list only under data/parquet/{source}/{date_prefix}/
+
+    Returns:
+        List of S3 keys (full paths) sorted by LastModified time (oldest first),
+        or list of dicts with 'key' and 'last_modified' if with_metadata=True
+    """
+    if not s3_client:
+        print("Warning: S3 client not initialized. Cannot list files from S3.")
+        return []
+
+    base_path = S3_PARQUET_PATH.rstrip("/")
+    # Search in source-specific directory: data/parquet/{source}/ or data/parquet/{source}/{date}/
+    prefix = f"{base_path}/{source}/"
+    if date_prefix:
+        prefix = f"{base_path}/{source}/{date_prefix}/"
+
+    try:
+        files = []
+        paginator = s3_client.get_paginator('list_objects_v2')
+        
+        for page in paginator.paginate(Bucket=S3_BUCKET_NAME, Prefix=prefix):
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    key = obj['Key']
+                    # Skip normalized files if requested
+                    if exclude_normalized and 'normalized' in key:
+                        continue
+                    # Check if it's a parquet file
+                    if key.endswith('.parquet'):
+                        # Apply pattern matching using fnmatch for wildcard support
+                        # Extract just the filename from the full key for pattern matching
+                        filename = os.path.basename(key)
+                        if fnmatch.fnmatch(filename, pattern):
+                            files.append({
+                                'key': key,
+                                'last_modified': obj['LastModified']
+                            })
+        
+        # Sort by LastModified (oldest first)
+        files.sort(key=lambda x: x['last_modified'])
+        
+        if with_metadata:
+            return files
+        else:
+            return [f['key'] for f in files]
+    
+    except ClientError as e:
+        print(f"Error listing files from S3: {e}")
+        return []
+    except Exception as e:
+        print(f"Unexpected error listing files from S3: {e}")
+        return []
+
+
+def list_normalized_parquet_files_from_s3() -> list:
+    """
+    List all normalized parquet files from S3 (under normalized/ prefix).
+
+    Example S3 path (key):
+        s3://<bucket>/data/parquet/normalized/2025-12-26/avinor_normalized_2026-01-25_002213.parquet
+    Prefix used: {S3_PARQUET_PATH}/normalized/
+
+    Returns:
+        List of full S3 keys sorted by LastModified time (oldest first)
+    """
+    if not s3_client:
+        print("Warning: S3 client not initialized. Cannot list files from S3.")
+        return []
+
+    base_path = S3_PARQUET_PATH.rstrip("/")
+    prefix = f"{base_path}/normalized/"
+
+    try:
+        files = []
+        paginator = s3_client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=S3_BUCKET_NAME, Prefix=prefix):
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    key = obj['Key']
+                    if key.endswith('.parquet') and '_normalized_' in key:
+                        files.append({
+                            'key': key,
+                            'last_modified': obj['LastModified']
+                        })
+        files.sort(key=lambda x: x['last_modified'])
+        return [f['key'] for f in files]
+    except ClientError as e:
+        print(f"Error listing normalized files from S3: {e}")
+        return []
+    except Exception as e:
+        print(f"Unexpected error listing normalized files from S3: {e}")
+        return []
+
+
+def read_parquet_from_s3(s3_key: str):
+    """
+    Read a Parquet file from S3 directly into a Polars DataFrame.
+
+    Args:
+        s3_key: Full S3 key (path) to the parquet file
+
+    Returns:
+        Polars DataFrame, or None if error occurred
+    """
+    if not s3_client:
+        print(f"Warning: S3 client not initialized. Cannot read from S3.")
+        return None
+
+    try:
+        # Get object from S3
+        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
+        parquet_bytes = response['Body'].read()
+        
+        # Read directly into Polars from bytes
+        import polars as pl
+        df = pl.read_parquet(io.BytesIO(parquet_bytes))
+        return df
+    
+    except ClientError as e:
+        print(f"Error reading {s3_key} from S3: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error reading {s3_key} from S3: {e}")
+        return None
+
+
+def read_json_from_s3(s3_key: str) -> dict | list | None:
+    """
+    Read a JSON file from S3.
+
+    Args:
+        s3_key: Full S3 key (path) to the JSON file
+
+    Returns:
+        Parsed JSON data (dict or list), or None if error occurred
+    """
+    if not s3_client:
+        print("Warning: S3 client not initialized. Cannot read from S3.")
+        return None
+
+    try:
+        # Get object from S3
+        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
+        json_bytes = response['Body'].read()
+        json_data = json.loads(json_bytes.decode('utf-8'))
+        return json_data
+    
+    except ClientError as e:
+        # File doesn't exist - return empty dict
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            return {}
+        print(f"Error reading {s3_key} from S3: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error reading {s3_key} from S3: {e}")
+        return None
+
+
+def get_normalization_tracking_key() -> str:
+    """Get S3 key for normalization tracking file."""
+    base_path = S3_JSON_PATH.rstrip("/")
+    return f"{base_path}/normalization_tracking.json"
+
+
+def load_normalized_files(source: str) -> set:
+    """
+    Load set of already normalized file keys for a specific source.
+
+    Args:
+        source: Data source name (e.g., "avinor", "entur", "oslobysykkel", "vegvesen")
+
+    Returns:
+        Set of S3 keys that have already been normalized
+    """
+    tracking_key = get_normalization_tracking_key()
+    tracking_data = read_json_from_s3(tracking_key)
+    
+    if tracking_data is None:
+        return set()
+    
+    if not isinstance(tracking_data, dict):
+        return set()
+    
+    # Return set of normalized files for this source
+    normalized_files = tracking_data.get(source, [])
+    return set(normalized_files)
+
+
+def mark_files_as_normalized(source: str, file_keys: list[str]) -> bool:
+    """
+    Mark files as normalized in the tracking file.
+
+    Args:
+        source: Data source name
+        file_keys: List of S3 keys that were normalized
+
+    Returns:
+        True if update was successful, False otherwise
+    """
+    tracking_key = get_normalization_tracking_key()
+    
+    # Load existing tracking data
+    tracking_data = read_json_from_s3(tracking_key)
+    if tracking_data is None:
+        tracking_data = {}
+    
+    if not isinstance(tracking_data, dict):
+        tracking_data = {}
+    
+    # Get existing normalized files for this source
+    existing_files = set(tracking_data.get(source, []))
+    
+    # Add new files
+    existing_files.update(file_keys)
+    
+    # Update tracking data
+    tracking_data[source] = sorted(list(existing_files))
+    
+    # Save back to S3
+    return save_json_to_s3(tracking_data, "normalization_tracking.json")

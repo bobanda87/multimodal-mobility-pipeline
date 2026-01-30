@@ -71,7 +71,7 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 # Log files for each collector
 AVINOR_LOG="$LOGS_DIR/avinor_${TIMESTAMP}.log"
-ENTUR_LOG="$LOGS_DIR/entur_${TIMESTAMP}.log"
+ENTUR_SIRI_ET_LOG="$LOGS_DIR/entur_siri_et_${TIMESTAMP}.log"
 OSLOBYKSYKKEL_LOG="$LOGS_DIR/oslobysykkel_${TIMESTAMP}.log"
 VEGVESEN_LOG="$LOGS_DIR/vegvesen_${TIMESTAMP}.log"
 
@@ -90,13 +90,13 @@ AVINOR_PID=$!
 PIDS+=($AVINOR_PID)
 echo "  Avinor PID: $AVINOR_PID -> $AVINOR_LOG"
 
-# Start Entur collector
-echo "Starting Entur collector..."
+# Start Entur SIRI ET collector (estimated timetable / delays)
+echo "Starting Entur SIRI ET collector..."
 cd "$SCRIPT_DIR"
-PYTHONPATH="$SCRIPT_DIR" $PYTHON_CMD -u entur/entur_collect.py > "$ENTUR_LOG" 2>&1 &
-ENTUR_PID=$!
-PIDS+=($ENTUR_PID)
-echo "  Entur PID: $ENTUR_PID -> $ENTUR_LOG"
+PYTHONPATH="$SCRIPT_DIR" $PYTHON_CMD -u entur/entur_siri_et_collect.py > "$ENTUR_SIRI_ET_LOG" 2>&1 &
+ENTUR_SIRI_ET_PID=$!
+PIDS+=($ENTUR_SIRI_ET_PID)
+echo "  Entur SIRI ET PID: $ENTUR_SIRI_ET_PID -> $ENTUR_SIRI_ET_LOG"
 
 # Start Oslo Bysykkel collector
 echo "Starting Oslo Bysykkel collector..."
@@ -122,7 +122,7 @@ echo "All collectors started successfully!"
 echo ""
 echo "To view logs in real-time:"
 echo "  tail -f $AVINOR_LOG"
-echo "  tail -f $ENTUR_LOG"
+echo "  tail -f $ENTUR_SIRI_ET_LOG"
 echo "  tail -f $OSLOBYKSYKKEL_LOG"
 echo "  tail -f $VEGVESEN_LOG"
 echo ""

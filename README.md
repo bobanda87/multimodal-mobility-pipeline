@@ -6,8 +6,9 @@ A project for collecting traffic data from various sources in Norway.
 
 1. **Avinor** - Flight data (every 3 minutes)
 2. **Entur** - GTFS-RT public transport data (every 3 minutes)
-3. **Oslo Bysykkel** - GBFS bike sharing station data (every 3 minutes)
-4. **Vegvesen** - DATEX traffic, weather, and travel time data (every 3 minutes)
+3. **Entur SIRI ET** - SIRI Estimated Timetable (departure times + per-stop delays); 2 calls per minute, round-robin across operators (rate limit 4/min)
+4. **Oslo Bysykkel** - GBFS bike sharing station data (every 3 minutes)
+5. **Vegvesen** - DATEX traffic, weather, and travel time data (every 3 minutes)
 
 ## Installation
 
@@ -78,6 +79,11 @@ python3 avinor_collect.py
 ```bash
 cd entur
 python3 entur_collect.py
+```
+
+```bash
+cd entur
+python3 entur_siri_et_collect.py   # SIRI ET, 2 calls/min, round-robin operators
 ```
 
 ```bash
@@ -183,25 +189,50 @@ cd analysis
 python3 normalize_data.py
 ```
 
-This will process all collected parquet files and create normalized versions in the `normalized_data/` directory.
+This will process all collected parquet files and create normalized versions in the `normalized_data/` directory. **Entur delays** normalization includes both GTFS-RT trip-updates and SIRI ET files (`*_siri_et_*.parquet`) in one set `entur_delays_normalized_*.parquet` (SIRI ET rows have `departure_timestamp` populated).
 
 ## Data Analysis
 
 ### Weather Impact Analysis
 
-Analyze the correlation between weather conditions and transportation systems:
+Analyze the correlation between weather conditions and transportation systems. Data are read from S3 (normalized parquet files).
 
+**Single period (e.g. last 7 days):**
 ```bash
 cd analysis
-python3 analyze_weather_impact.py
+python3 analyze_weather_impact.py --mode single --period-days 7
 ```
 
-This analysis examines:
-- **Oslo Bysykkel**: Correlation between temperature and bike availability
-- **Public Transport (Entur)**: Correlation between temperature and vehicle activity in Oslo area
-- **Aviation (Avinor)**: Correlation between temperature and flight activity
+**Comparative analysis (recommended for MDPI):** compare several time windows (e.g. Pre-Christmas, Turn of year, Early January):
+```bash
+python3 analyze_weather_impact.py --mode compare --periods three_phases
+```
 
-The analysis uses normalized data and provides correlation coefficients and interpretations.
+Other period sets: `two_weeks`, `dec_jan`, `four_windows`, `weekday_weekend` (radni dani vs vikend).
+
+**Pokretanje svih 4 analiza (sa temperaturom i multimodal):**
+```bash
+cd analysis
+for p in three_phases two_weeks dec_jan four_windows; do python3 analyze_weather_impact.py --mode compare --periods "$p"; done
+```
+
+The analysis examines:
+- **Oslo Bysykkel**: Correlation between temperature and bike usage (bikes in use)
+- **Public Transport (Entur)**: Correlation between temperature and vehicle activity (Norway-wide)
+- **Aviation (Avinor)**: Correlation between temperature and flight activity
+- **Multimodal**: Combined (min–max scaled) activity index (bikes + PT + flights) vs temperature
+- **Spoljna temperatura**: Min / max / srednja / std (°C) po periodu (road surface temperature)
+- **Delay**: From Entur **trip-updates** (arrival_delay, departure_delay in seconds) and **SIRI ET**, normalization creates `entur_delays`; analysis computes correlation of temperature with mean delay per minute. **Alerts** files contain only cause/effect codes (e.g. 1, 8), not delay magnitudes – use trip-updates or SIRI ET for delay.
+
+#### Interpretation of results (example run)
+
+A typical comparative run over **Pre-Christmas (Dec 20–26)**, **Turn of year (Dec 27 – Jan 2)** and **Early January (Jan 3–11)** gives:
+
+- **Bysykkel**: Often reported as N/A — overlap of weather and bike data in 1-minute buckets can be low (different coverage or missing join keys). Worth checking temporal alignment and aggregation (e.g. hourly) if you need a stable bysykkel correlation.
+- **Public transport**: Coefficients are small in magnitude (e.g. 0.007, −0.051, −0.056). Suggests weak or no linear relationship between road temperature and public transport activity in these windows; useful to report as “no strong effect” or to try other weather variables.
+- **Flight activity**: Can show strong or unstable values (e.g. 1.000 in one period) when sample size is small or variance is low — treat very high correlations as possible artifacts and report sample sizes. Later periods may show N/A if there are too few overlapping minutes.
+
+Use the printed **COMPARATIVE CORRELATIONS** table as the basis for a manuscript table; consider adding sample sizes (e.g. number of minutes or records) per period in the paper.
 
 ## Project Structure
 

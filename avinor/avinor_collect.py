@@ -1,8 +1,26 @@
+"""
+Avinor flight data collector (departures only, past window).
+
+Uses XmlFeed v1.0: https://partner.avinor.no/en/services/flight-data/
+- airport (required), direction=D (departures), TimeFrom / TimeTo (hours).
+- Avinor: retrieve every 3 minutes; cache data; do not let end-users hit the API directly.
+- Status codes: A=Arrived, C=Cancelled, D=Departed, E=New time, N=New info.
+- Times in UTC (ISO 8601).
+"""
+import os
+import sys
 import time
 import requests
 import pandas as pd
 from datetime import datetime
 import xml.etree.ElementTree as ET
+
+# Add project root so we can import utils when run from avinor/ or as python avinor/avinor_collect.py
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from utils.s3_upload import save_json_to_s3, save_parquet_to_s3
 
 HEADERS = {"User-Agent": "AvinorDataCollector/1.0 (+https://avinor.no)"}
@@ -27,7 +45,12 @@ def fetch_airports():
 
 
 def fetch_flight_data(airport_code):
-    url = f"https://asrv.avinor.no/XmlFeed/v1.0?airport={airport_code}"
+    # Avinor XmlFeed: direction=D (departures only), TimeFrom=24h past, TimeTo=0 (no future)
+    # so we only get flights that were already scheduled to depart (for delay analysis)
+    url = (
+        f"https://asrv.avinor.no/XmlFeed/v1.0?airport={airport_code}"
+        f"&direction=D&TimeFrom=24&TimeTo=0"
+    )
     try:
         response = requests.get(url, headers=HEADERS, timeout=30)
         if response.status_code != 200:
@@ -36,9 +59,19 @@ def fetch_flight_data(airport_code):
         root = ET.fromstring(response.text)
         flights = []
         for flight in root.findall(".//flight"):
-            record = {child.tag: child.text for child in flight}
+            record = {}
+            for child in flight:
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                record[tag] = (child.text or "").strip() or None
+                for attr, val in child.attrib.items():
+                    record[f"{tag}_{attr}"] = val
             record.update(flight.attrib)
+            if "status_code" in record:
+                record["status"] = record["status_code"]
+            if "delayed" not in record:
+                record["delayed"] = None
             flights.append(record)
+
         if not flights:
             print(f"{airport_code}: no flights")
             return None
