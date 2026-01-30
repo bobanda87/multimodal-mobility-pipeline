@@ -214,53 +214,59 @@ def analyze_weather_impact(
     # Process each source separately since they have different schemas
 
     # Weather data: temperature from vegvesen
+    # Prefer dedicated road_temperature column (normalized vegvesen); fallback to metric_value.
+    # Apply plausible range for road surface temp (-50 .. 50 °C) to drop sensor errors.
     weather = None
     if "vegvesen" in combined_by_source:
         vegvesen_df = combined_by_source["vegvesen"]
         print(f"Vegvesen data loaded: {vegvesen_df.height} records")
         print(f"Vegvesen columns: {vegvesen_df.columns}")
 
-        # Check if we have metric_value column
-        if "metric_value" in vegvesen_df.columns:
-            # Try to extract temperature - handle string values
+        use_road_temp = "road_temperature" in vegvesen_df.columns
+        if use_road_temp:
+            temp_col = pl.col("road_temperature").cast(pl.Float64, strict=False)
+        elif "metric_value" in vegvesen_df.columns:
+            temp_col = pl.col("metric_value").cast(pl.Float64, strict=False)
+        else:
+            print(f"Warning: Neither road_temperature nor metric_value found. Available columns: {vegvesen_df.columns}")
+            use_road_temp = False
+            temp_col = None
+
+        if temp_col is not None:
             weather = (
                 vegvesen_df
                 .with_columns([
-                    # Convert to UTC and truncate to ensure consistent timezone
                     pl.col("timestamp")
                     .dt.replace_time_zone("UTC")
                     .dt.truncate("1m")
                     .alias("minute"),
-                    # Try to parse metric_value as float (it might be string)
-                    pl.col("metric_value")
-                    .cast(pl.Float64, strict=False)
-                    .alias("temperature")
+                    temp_col.alias("temperature"),
                 ])
                 .filter(
                     (pl.col("temperature").is_not_null())
                     & (pl.col("temperature").is_finite())
-                    & (pl.col("temperature") != 0)  # Filter out zeros
+                    & (pl.col("temperature") >= -50)
+                    & (pl.col("temperature") <= 50)
                 )
             )
+            if not use_road_temp:
+                weather = weather.filter(pl.col("temperature") != 0)
 
             if weather.height > 0:
                 weather = weather.group_by("minute").agg(
                     pl.col("temperature").mean().alias("road_temperature")
                 )
                 print(
-                    f"Weather data aggregated: {weather.height} time buckets")
+                    f"Weather data aggregated: {weather.height} time buckets (source: {'road_temperature' if use_road_temp else 'metric_value'})")
                 if weather.height > 0:
                     print(
                         f"Weather minute range: {weather.select([pl.col('minute').min().alias('min_minute'), pl.col('minute').max().alias('max_minute')])}")
             else:
-                print("Warning: No valid temperature values after filtering")
-                print(
-                    f"Sample metric_value values: {vegvesen_df.select('metric_value').head(5)}")
+                print("Warning: No valid temperature values after filtering (check range -50..50 °C)")
+                if not use_road_temp:
+                    print(
+                        f"Sample metric_value values: {vegvesen_df.select('metric_value').head(5)}")
                 weather = None
-        else:
-            print(
-                f"Warning: metric_value column not found. Available columns: {vegvesen_df.columns}")
-            weather = None
 
     # Oslo Bysykkel: total bikes in use across all stations
     # metric_value now represents bikes_in_use (total_capacity - bikes_available)
