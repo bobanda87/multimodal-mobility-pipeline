@@ -2,6 +2,19 @@
 S3 upload utility functions for JSON and Parquet files.
 """
 import os
+import time
+
+# Use certifi CA bundle for SSL (avoids CERTIFICATE_VERIFY_FAILED on macOS and some environments)
+try:
+    import certifi
+    _ca = certifi.where()
+    if not os.environ.get("SSL_CERT_FILE"):
+        os.environ["SSL_CERT_FILE"] = _ca
+    if not os.environ.get("AWS_CA_BUNDLE"):
+        os.environ["AWS_CA_BUNDLE"] = _ca
+except ImportError:
+    pass
+
 import json
 import io
 import fnmatch
@@ -47,6 +60,24 @@ else:
         missing.append("S3_BUCKET_NAME")
     print(f"Warning: S3 client not initialized. Missing: {', '.join(missing)}. "
           f"Please configure .env file with AWS credentials.")
+
+# Retry S3 operations on connection/SSL errors (transient failures)
+S3_RETRY_ATTEMPTS = 4
+S3_RETRY_DELAY_SEC = 2
+
+
+def _retry_s3(fn, *args, _attempt=1, **kwargs):
+    """Run fn(*args, **kwargs); on connection/SSL error retry up to S3_RETRY_ATTEMPTS with delay."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        err_str = str(e).lower()
+        if _attempt < S3_RETRY_ATTEMPTS and (
+            "certificate" in err_str or "ssl" in err_str or "could not connect" in err_str or "endpoint" in err_str
+        ):
+            time.sleep(S3_RETRY_DELAY_SEC)
+            return _retry_s3(fn, *args, _attempt=_attempt + 1, **kwargs)
+        raise
 
 
 def upload_to_s3(local_file_path: str, s3_key: str, file_type: str = "parquet") -> bool:
@@ -240,41 +271,31 @@ def list_parquet_files_from_s3(source: str, pattern: str = "*.parquet", exclude_
         return []
 
     base_path = S3_PARQUET_PATH.rstrip("/")
-    # Search in source-specific directory: data/parquet/{source}/ or data/parquet/{source}/{date}/
     prefix = f"{base_path}/{source}/"
     if date_prefix:
         prefix = f"{base_path}/{source}/{date_prefix}/"
 
-    try:
+    def _list_pages():
         files = []
         paginator = s3_client.get_paginator('list_objects_v2')
-        
         for page in paginator.paginate(Bucket=S3_BUCKET_NAME, Prefix=prefix):
             if 'Contents' in page:
                 for obj in page['Contents']:
                     key = obj['Key']
-                    # Skip normalized files if requested
                     if exclude_normalized and 'normalized' in key:
                         continue
-                    # Check if it's a parquet file
                     if key.endswith('.parquet'):
-                        # Apply pattern matching using fnmatch for wildcard support
-                        # Extract just the filename from the full key for pattern matching
                         filename = os.path.basename(key)
                         if fnmatch.fnmatch(filename, pattern):
-                            files.append({
-                                'key': key,
-                                'last_modified': obj['LastModified']
-                            })
-        
-        # Sort by LastModified (oldest first)
+                            files.append({'key': key, 'last_modified': obj['LastModified']})
         files.sort(key=lambda x: x['last_modified'])
-        
+        return files
+
+    try:
+        files = _retry_s3(_list_pages)
         if with_metadata:
             return files
-        else:
-            return [f['key'] for f in files]
-    
+        return [f['key'] for f in files]
     except ClientError as e:
         print(f"Error listing files from S3: {e}")
         return []
@@ -301,7 +322,7 @@ def list_normalized_parquet_files_from_s3() -> list:
     base_path = S3_PARQUET_PATH.rstrip("/")
     prefix = f"{base_path}/normalized/"
 
-    try:
+    def _list_pages():
         files = []
         paginator = s3_client.get_paginator('list_objects_v2')
         for page in paginator.paginate(Bucket=S3_BUCKET_NAME, Prefix=prefix):
@@ -309,12 +330,12 @@ def list_normalized_parquet_files_from_s3() -> list:
                 for obj in page['Contents']:
                     key = obj['Key']
                     if key.endswith('.parquet') and '_normalized_' in key:
-                        files.append({
-                            'key': key,
-                            'last_modified': obj['LastModified']
-                        })
+                        files.append({'key': key, 'last_modified': obj['LastModified']})
         files.sort(key=lambda x: x['last_modified'])
         return [f['key'] for f in files]
+
+    try:
+        return _retry_s3(_list_pages)
     except ClientError as e:
         print(f"Error listing normalized files from S3: {e}")
         return []
@@ -326,27 +347,20 @@ def list_normalized_parquet_files_from_s3() -> list:
 def read_parquet_from_s3(s3_key: str):
     """
     Read a Parquet file from S3 directly into a Polars DataFrame.
-
-    Args:
-        s3_key: Full S3 key (path) to the parquet file
-
-    Returns:
-        Polars DataFrame, or None if error occurred
+    Retries on connection/SSL errors up to S3_RETRY_ATTEMPTS.
     """
     if not s3_client:
-        print(f"Warning: S3 client not initialized. Cannot read from S3.")
+        print("Warning: S3 client not initialized. Cannot read from S3.")
         return None
 
-    try:
-        # Get object from S3
+    def _get_bytes():
         response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
-        parquet_bytes = response['Body'].read()
-        
-        # Read directly into Polars from bytes
+        return response['Body'].read()
+
+    try:
+        parquet_bytes = _retry_s3(_get_bytes)
         import polars as pl
-        df = pl.read_parquet(io.BytesIO(parquet_bytes))
-        return df
-    
+        return pl.read_parquet(io.BytesIO(parquet_bytes))
     except ClientError as e:
         print(f"Error reading {s3_key} from S3: {e}")
         return None

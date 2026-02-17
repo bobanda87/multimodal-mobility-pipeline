@@ -133,11 +133,36 @@ def analyze_weather_impact(
     if not source_data:
         raise RuntimeError("No valid dataframes loaded")
 
-    # Combine dataframes per source
+    # Combine dataframes per source (unify schemas to avoid Int64/Float64 mismatch)
     combined_by_source = {}
     for source, dfs in source_data.items():
         if dfs:
-            combined_by_source[source] = pl.concat(dfs, how='diagonal')
+            if len(dfs) > 1:
+                # Collect unified column types across all DataFrames
+                all_cols: dict[str, pl.DataType] = {}
+                for df in dfs:
+                    for col, dt in df.schema.items():
+                        if col not in all_cols or str(all_cols[col]) == "Null":
+                            all_cols[col] = dt
+                        elif str(dt) != "Null" and all_cols[col] != dt:
+                            # Resolve conflicts: promote Int->Float, Null->anything
+                            a, b = all_cols[col], dt
+                            if {a, b} <= {pl.Int64, pl.Float64, pl.Int32, pl.Float32}:
+                                all_cols[col] = pl.Float64
+                            elif pl.String in (a, b):
+                                all_cols[col] = pl.String
+                aligned = []
+                for df in dfs:
+                    exprs = []
+                    for col, dtype in all_cols.items():
+                        if col in df.columns:
+                            exprs.append(pl.col(col).cast(dtype, strict=False))
+                        else:
+                            exprs.append(pl.lit(None).cast(dtype).alias(col))
+                    aligned.append(df.select(exprs))
+                combined_by_source[source] = pl.concat(aligned, how='diagonal')
+            else:
+                combined_by_source[source] = dfs[0]
 
     # Apply time period filter if specified
     if start_date is not None or end_date is not None or period_days is not None:
@@ -739,6 +764,26 @@ PERIODS_WEEKDAY_VS_WEEKEND = [
     },
 ]
 
+# Option F: Data window 2026-01-30 to 2026-02-16 (partial first/last day)
+# Three phases for comparative analysis on this dataset.
+PERIODS_JAN30_FEB16 = [
+    {
+        "name": "Week 1 (Jan 30 – Feb 5)",
+        "start_date": datetime(2026, 1, 30, 0, 0, 0, tzinfo=timezone.utc),
+        "end_date": datetime(2026, 2, 5, 23, 59, 59, tzinfo=timezone.utc),
+    },
+    {
+        "name": "Week 2 (Feb 6 – Feb 12)",
+        "start_date": datetime(2026, 2, 6, 0, 0, 0, tzinfo=timezone.utc),
+        "end_date": datetime(2026, 2, 12, 23, 59, 59, tzinfo=timezone.utc),
+    },
+    {
+        "name": "Week 3 (Feb 13 – Feb 16)",
+        "start_date": datetime(2026, 2, 13, 0, 0, 0, tzinfo=timezone.utc),
+        "end_date": datetime(2026, 2, 16, 23, 59, 59, tzinfo=timezone.utc),
+    },
+]
+
 
 def print_comparison_table(comparison_results: dict) -> None:
     """Print a summary table of correlations and temperature conditions across periods (for MDPI tables)."""
@@ -798,17 +843,47 @@ def print_comparison_table(comparison_results: dict) -> None:
             break
 
 
+def _parse_date(s: str) -> datetime:
+    """Parse ISO date or datetime string to UTC datetime."""
+    s = s.strip()
+    if not s:
+        raise ValueError("Empty date string")
+    if len(s) <= 10:  # YYYY-MM-DD
+        return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Weather impact analysis (single period or comparative)")
     parser.add_argument("--mode", choices=["single", "compare"], default="compare", help="single = one period, compare = multiple periods")
-    parser.add_argument("--periods", choices=["three_phases", "two_weeks", "dec_jan", "four_windows", "weekday_weekend"], default="three_phases", help="Which predefined periods to compare")
+    parser.add_argument("--periods", choices=["three_phases", "two_weeks", "dec_jan", "four_windows", "weekday_weekend", "jan30_feb16"], default="three_phases", help="Which predefined periods to compare")
     parser.add_argument("--period-days", type=int, default=7, help="For single mode: length of period in days (from end of data)")
+    parser.add_argument("--start-date", type=str, default=None, metavar="YYYY-MM-DD", help="Start of analysis window (single mode or filter)")
+    parser.add_argument("--end-date", type=str, default=None, metavar="YYYY-MM-DD", help="End of analysis window (single mode or filter)")
     args = parser.parse_args()
+
+    start_date = None
+    end_date = None
+    if args.start_date:
+        start_date = _parse_date(args.start_date)
+        if len(args.start_date.strip()) <= 10:
+            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    if args.end_date:
+        end_date = _parse_date(args.end_date)
+        if len(args.end_date.strip()) <= 10:
+            end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999_999)
 
     try:
         if args.mode == "single":
-            results = analyze_weather_impact(period_days=args.period_days)
+            kwargs = {}
+            if start_date is not None:
+                kwargs["start_date"] = start_date
+            if end_date is not None:
+                kwargs["end_date"] = end_date
+            if not kwargs and args.period_days is not None:
+                kwargs["period_days"] = args.period_days
+            results = analyze_weather_impact(**kwargs)
             print("\n" + "=" * 60)
             print("WEATHER IMPACT ANALYSIS RESULTS")
             print("=" * 60)
@@ -840,6 +915,7 @@ if __name__ == "__main__":
                 "dec_jan": PERIODS_DEC_VS_JAN,
                 "four_windows": PERIODS_FOUR_WINDOWS,
                 "weekday_weekend": PERIODS_WEEKDAY_VS_WEEKEND,
+                "jan30_feb16": PERIODS_JAN30_FEB16,
             }
             periods = period_sets[args.periods]
             print(f"Comparing {len(periods)} periods: {args.periods}")

@@ -1,5 +1,16 @@
 import os
 import sys
+
+# Set SSL certs before any network code (S3) is loaded; avoids CERTIFICATE_VERIFY_FAILED
+try:
+    import certifi
+    if not os.environ.get("SSL_CERT_FILE"):
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+    if not os.environ.get("AWS_CA_BUNDLE"):
+        os.environ["AWS_CA_BUNDLE"] = certifi.where()
+except ImportError:
+    pass
+
 from glob import glob
 import polars as pl
 import pandas as pd
@@ -112,6 +123,55 @@ def group_files_by_date(files_with_metadata: list) -> dict:
         files_by_date[date_str].append(key)
     
     return dict(files_by_date)
+
+
+def _unify_avinor_schemas(raw_dfs: list[pl.DataFrame]) -> list[pl.DataFrame]:
+    """Align Avinor raw DataFrames so pl.concat(how='diagonal') does not raise SchemaError (String vs Null etc.)."""
+    if not raw_dfs:
+        return raw_dfs
+    all_cols = set()
+    for df in raw_dfs:
+        all_cols.update(df.columns)
+    unified = {}
+    for col in all_cols:
+        best = pl.Null
+        for df in raw_dfs:
+            if col not in df.columns:
+                continue
+            dt = df.schema[col]
+            if dt == pl.Null or (str(dt).startswith("Unknown") or "Unknown" in str(dt)):
+                continue
+            if dt == pl.String or (hasattr(pl, "Utf8") and str(dt) == "Utf8"):
+                best = pl.String
+                break
+            if "Datetime" in str(dt):
+                best = pl.Datetime("us")
+                break
+            if dt == pl.Date:
+                best = pl.Date
+                break
+            if dt in (pl.Float64, pl.Float32):
+                best = pl.Float64
+                break
+            if dt in (pl.Int64, pl.Int32, pl.UInt32, pl.UInt64):
+                if best != pl.Float64:
+                    best = pl.Int64
+            if dt == pl.Boolean:
+                best = pl.Boolean
+                break
+        if best == pl.Null:
+            best = pl.String
+        unified[col] = best
+    out = []
+    for df in raw_dfs:
+        exprs = []
+        for col, dtype in unified.items():
+            if col in df.columns:
+                exprs.append(pl.col(col).cast(dtype, strict=False).alias(col))
+            else:
+                exprs.append(pl.lit(None).cast(dtype).alias(col))
+        out.append(df.select(exprs))
+    return out
 
 
 # --- AVINOR ------------------------------------------------------
@@ -411,16 +471,37 @@ NORMALIZERS = {
 }
 
 
-def run_normalization(only_today: bool = True):
+def _filter_dates_to_interval(sorted_dates: list[str], start_date: str | None, end_date: str | None) -> list[str]:
+    """Keep only dates in [start_date, end_date] (inclusive)."""
+    if start_date is not None:
+        sorted_dates = [d for d in sorted_dates if d >= start_date]
+    if end_date is not None:
+        sorted_dates = [d for d in sorted_dates if d <= end_date]
+    return sorted_dates
+
+
+def run_normalization(
+    only_today: bool = True,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
     """Run normalization for all available data sources from S3.
 
     Args:
-        only_today: If True, process only files from today's date. If False, process all dates.
+        only_today: If True and no interval given, process only files from today. If False and no interval, process all dates.
+        start_date: Start of interval (YYYY-MM-DD). If set, only dates >= start_date are processed.
+        end_date: End of interval (YYYY-MM-DD). If set, only dates <= end_date are processed.
+        When start_date or end_date is set, only_today is ignored and files are listed for the whole source, then filtered by this interval.
     """
     print("Starting normalization process...\n")
     print("Reading files from S3 bucket...\n")
     today_str = datetime.now().strftime("%Y-%m-%d")
-    if only_today:
+    use_interval = start_date is not None or end_date is not None
+    date_prefix = None
+    if use_interval:
+        print(f"Processing files in interval: {start_date or '(any)'} to {end_date or '(any)'}\n")
+    elif only_today:
+        date_prefix = today_str
         print(f"Processing only files from today: {today_str}\n")
 
     # Sources in main loop: avinor, oslobysykkel, vegvesen, vegvesen_travel_times.
@@ -434,13 +515,13 @@ def run_normalization(only_today: bool = True):
             # Only station_status files have the required columns
             parquet_files_metadata = get_all_parquet_files_from_s3(
                 source, "*station_status*.parquet", with_metadata=True,
-                date_prefix=today_str if only_today else None)
+                date_prefix=date_prefix)
 
             # Load station capacity from station_information files
             station_capacity = {}
             info_files = get_all_parquet_files_from_s3(
                 source, "*station_information*.parquet",
-                date_prefix=today_str if only_today else None)
+                date_prefix=date_prefix)
             if info_files:
                 # Use the most recent station_information file (last in list, since sorted oldest first)
                 latest_info_key = info_files[-1]
@@ -464,16 +545,16 @@ def run_normalization(only_today: bool = True):
         elif source == "vegvesen":
             parquet_files_metadata = get_all_parquet_files_from_s3(
                 source, "*weather_data*.parquet", with_metadata=True,
-                date_prefix=today_str if only_today else None)
+                date_prefix=date_prefix)
         elif source == "vegvesen_travel_times":
             # Raw files live under vegvesen/ prefix
             parquet_files_metadata = get_all_parquet_files_from_s3(
                 "vegvesen", "*travel_times*.parquet", with_metadata=True,
-                date_prefix=today_str if only_today else None)
+                date_prefix=date_prefix)
         else:
             parquet_files_metadata = get_all_parquet_files_from_s3(
                 source, with_metadata=True,
-                date_prefix=today_str if only_today else None)
+                date_prefix=date_prefix)
 
         if not parquet_files_metadata:
             print(f"{source}: No parquet files found on S3.")
@@ -495,11 +576,16 @@ def run_normalization(only_today: bool = True):
         # Group files by date
         files_by_date = group_files_by_date(files_to_process_metadata)
         sorted_dates = sorted(files_by_date.keys())
-        if only_today:
+        if use_interval:
+            sorted_dates = _filter_dates_to_interval(sorted_dates, start_date, end_date)
+        elif only_today:
             sorted_dates = [d for d in sorted_dates if d == today_str]
-            if not sorted_dates:
+        if not sorted_dates:
+            if only_today and not use_interval:
                 print(f"{source}: No files from today ({today_str}). Skipping.\n")
-                continue
+            else:
+                print(f"{source}: No files in selected interval. Skipping.\n")
+            continue
 
         print(f"{source}: Found {len(files_to_process_metadata)} files to process across {len(sorted_dates)} days")
         print(f"{source}: Processing by date (oldest first)...\n")
@@ -528,7 +614,8 @@ def run_normalization(only_today: bool = True):
                         continue
                     raw_dfs.append(df)
                 if raw_dfs:
-                    # Align by column name (different files may have different order/subset of columns)
+                    # Unify schemas (String vs Null etc.) so concat does not raise SchemaError
+                    raw_dfs = _unify_avinor_schemas(raw_dfs)
                     combined_raw = pl.concat(raw_dfs, how="diagonal")
                     if "uniqueID" in combined_raw.columns:
                         n_before = combined_raw.height
@@ -626,10 +713,10 @@ def run_normalization(only_today: bool = True):
     source = "entur_siri_et"
     siri_et_metadata = get_all_parquet_files_from_s3(
         "entur", "*_siri_et_*.parquet", with_metadata=True,
-        date_prefix=today_str if only_today else None)
+        date_prefix=date_prefix)
     trip_updates_metadata = get_all_parquet_files_from_s3(
         "entur", "*trip-updates*.parquet", with_metadata=True,
-        date_prefix=today_str if only_today else None)
+        date_prefix=date_prefix)
     # Merge: SIRI ET + GTFS-RT trip-updates (run_all_collectors runs entur_collect.py, not siri_et)
     seen_keys = set()
     parquet_files_metadata = []
@@ -648,12 +735,17 @@ def run_normalization(only_today: bool = True):
         else:
             files_by_date = group_files_by_date(files_to_process_metadata)
             sorted_dates = sorted(files_by_date.keys())
-            if only_today:
+            if use_interval:
+                sorted_dates = _filter_dates_to_interval(sorted_dates, start_date, end_date)
+            elif only_today:
                 sorted_dates = [d for d in sorted_dates if d == today_str]
-                if not sorted_dates:
+            if not sorted_dates:
+                if only_today and not use_interval:
                     print(f"{source}: No files from today ({today_str}). Skipping.\n")
-            if sorted_dates:
-                if only_today:
+                else:
+                    print(f"{source}: No SIRI ET / trip-updates files in selected interval. Skipping.\n")
+            elif sorted_dates:
+                if only_today and not use_interval:
                     print(f"{source}: Found {len(files_to_process_metadata)} SIRI ET / trip-updates files for today ({today_str})\n")
                 else:
                     print(f"{source}: Found {len(files_to_process_metadata)} SIRI ET / trip-updates files across {len(sorted_dates)} days\n")
@@ -711,4 +803,40 @@ def run_normalization(only_today: bool = True):
 
 
 if __name__ == "__main__":
-    run_normalization()
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Normalize raw parquet files from S3 and upload normalized results to S3."
+    )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Start of date interval to normalize (inclusive). If set, only dates >= this are processed.",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="End of date interval to normalize (inclusive). If set, only dates <= this are processed.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Process all dates on S3 (no date filter).",
+    )
+    args = parser.parse_args()
+
+    only_today = True
+    start_date = None
+    end_date = None
+    if args.all:
+        only_today = False
+    else:
+        start_date = args.start_date
+        end_date = args.end_date
+        if start_date is not None or end_date is not None:
+            only_today = False
+
+    run_normalization(only_today=only_today, start_date=start_date, end_date=end_date)
