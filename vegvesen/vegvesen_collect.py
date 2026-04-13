@@ -28,7 +28,12 @@ PASSWORD = os.getenv("VEGVESEN_PASS")
 FEEDS = {
     "traffic_situations": "https://datex-server-get-v3-1.atlas.vegvesen.no/datexapi/GetSituation/pullsnapshotdata",
     "weather_data": "https://datex-server-get-v3-1.atlas.vegvesen.no/datexapi/GetMeasuredWeatherData/pullsnapshotdata",
-    "travel_times": "https://datex-server-get-v3-1.atlas.vegvesen.no/datexapi/GetTravelTimeData/pullsnapshotdata"
+    "travel_times": "https://datex-server-get-v3-1.atlas.vegvesen.no/datexapi/GetTravelTimeData/pullsnapshotdata",
+    # Lokacije vremenskih stanica (koordinate, broj puta, naziv) – isti auth kao ostali feed-ovi
+    "weather_site_table": (
+        "https://datex-server-get-v3-1.atlas.vegvesen.no/datexapi/"
+        "GetMeasurementWeatherSiteTable/pullsnapshotdata"
+    ),
 }
 
 
@@ -124,6 +129,22 @@ def fetch_datex_data(feed_name, url):
                 return
             df = pd.json_normalize(measurements, sep=".")
 
+        elif feed_name == "weather_site_table":
+            # Tabela lokacija stanica: izvuci niz measurementSite (jedan red po stanici)
+            # da Parquet ne dobije kolonu sa mešovitim list/non-list vrednostima
+            try:
+                container = data.get("ns2:messageContainer", {})
+                payload = container.get("ns2:payload", {})
+                site_table = payload.get("ns10:measurementSiteTable") or {}
+                sites = ensure_list(site_table.get("ns10:measurementSite", []))
+            except Exception:
+                sites = []
+            if not sites:
+                print(f"{feed_name}: No measurementSite records found.")
+                return
+            records = [clean_nested(s) for s in sites]
+            df = pd.json_normalize(records, sep=".")
+
         else:
             flat = clean_nested(data)
             df = pd.json_normalize(flat, sep=".")
@@ -131,8 +152,13 @@ def fetch_datex_data(feed_name, url):
         # Save directly to S3
         today = datetime.now().strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%H%M%S")
-        json_s3_key = f"vegvesen/{today}/{feed_name}_{timestamp}.json"
-        parquet_s3_key = f"vegvesen/{today}/{feed_name}_{timestamp}.parquet"
+        # Referentni podaci (lokacije stanica): fiksna putanja, povlači se jednom
+        if feed_name == "weather_site_table":
+            json_s3_key = "vegvesen/reference/weather_site_table.json"
+            parquet_s3_key = "vegvesen/reference/weather_site_table.parquet"
+        else:
+            json_s3_key = f"vegvesen/{today}/{feed_name}_{timestamp}.json"
+            parquet_s3_key = f"vegvesen/{today}/{feed_name}_{timestamp}.parquet"
 
         save_json_to_s3(data, json_s3_key)
         save_parquet_to_s3(df, parquet_s3_key)
@@ -157,4 +183,10 @@ def run_collector(interval=180):
 
 
 if __name__ == "__main__":
-    run_collector(interval=180)
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "site-table":
+        # Jednokratno povuci tabelu lokacija stanica (koordinate); čuva se u
+        # vegvesen/reference/ – nema smisla povlačiti svakodnevno
+        fetch_datex_data("weather_site_table", FEEDS["weather_site_table"])
+    else:
+        run_collector(interval=180)

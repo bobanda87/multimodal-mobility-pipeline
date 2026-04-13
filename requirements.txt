@@ -23,3 +23,6 @@ python-dotenv
 # AWS S3 support
 boto3
 certifi
+
+# Plotting
+matplotlib
