@@ -67,7 +67,43 @@ def analyze_weather_impact(
                 "No normalized parquet files found on S3.\n"
                 "Please run 'python normalize_data.py' first to create normalized files on S3."
             )
-        print(f"Loading {len(file_keys)} normalized files from S3...")
+        # Učitaj samo fajlove čiji servisni datum u putanji (normalized/YYYY-MM-DD/) upada u
+        # [start_date, end_date] kada su oba zadata — drastično smanjuje I/O i memoriju.
+        if start_date is not None and end_date is not None:
+            if start_date.tzinfo is None:
+                start_date = start_date.replace(tzinfo=timezone.utc)
+            if end_date.tzinfo is None:
+                end_date = end_date.replace(tzinfo=timezone.utc)
+            ds = start_date.strftime("%Y-%m-%d")
+            de = end_date.strftime("%Y-%m-%d")
+
+            def _norm_folder_date(key: str) -> str | None:
+                parts = key.split("/")
+                try:
+                    i = parts.index("normalized")
+                    d = parts[i + 1]
+                    if len(d) == 10 and d[4] == "-" and d[7] == "-":
+                        return d
+                except (ValueError, IndexError):
+                    return None
+                return None
+
+            filtered = [
+                k for k in file_keys
+                if (d := _norm_folder_date(k)) is not None and ds <= d <= de
+            ]
+            if filtered:
+                print(
+                    f"Loading {len(filtered)} normalized files from S3 "
+                    f"(date folders {ds}..{de}, filtered from {len(file_keys)} total)..."
+                )
+                file_keys = filtered
+            else:
+                print(
+                    f"Warning: no S3 keys under normalized/ in [{ds}, {de}]; loading all {len(file_keys)} files."
+                )
+        else:
+            print(f"Loading {len(file_keys)} normalized files from S3...")
         for s3_key in file_keys:
             try:
                 df = read_parquet_from_s3(s3_key)

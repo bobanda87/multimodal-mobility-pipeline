@@ -26,9 +26,10 @@ except ImportError:
     pass
 
 from glob import glob
+import re
 import polars as pl
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def get_latest_parquet(data_dir, pattern="*.parquet"):
@@ -652,6 +653,59 @@ def normalize_entur_trip_updates(df: pl.DataFrame) -> pl.DataFrame:
     return out
 
 
+_ENTUR_MIN_PLAUSIBLE_UNIX = 946684800
+
+
+def entur_snapshot_epoch_from_s3_key(date_str: str, s3_key: str) -> int | None:
+    """
+    Iz imena Entur raw fajla (npr. RUT_trip-updates_132528.parquet) izvlači HHMMSS snimka
+    i spaja sa datumom foldera na S3 (YYYY-MM-DD) u UTC epoch sekunde.
+
+    Koristi se za trip-updates bez RecordedAtTime/start_date: raspodela kroz dan umesto
+    jedne ponoći za ceo batch, radi preklapanja sa minut-rasterom vremena u analizi.
+    """
+    base = os.path.basename(s3_key)
+    m = re.search(r"_(\d{6})\.parquet$", base, flags=re.IGNORECASE)
+    if not m:
+        return None
+    hhmmss = m.group(1)
+    try:
+        h = int(hhmmss[0:2])
+        mi = int(hhmmss[2:4])
+        sec = int(hhmmss[4:6])
+    except ValueError:
+        return None
+    if h > 23 or mi > 59 or sec > 59:
+        return None
+    day = datetime.strptime(date_str, "%Y-%m-%d").replace(
+        tzinfo=timezone.utc, hour=h, minute=mi, second=sec, microsecond=0
+    )
+    return int(day.timestamp())
+
+
+def fill_entur_bad_timestamps_with_epoch(df: pl.DataFrame, fallback_epoch: int) -> pl.DataFrame:
+    """Za redove bez plauzibilnog timestamp/departure_timestamp, postavi oba na fallback_epoch."""
+    if df.height == 0:
+        return df
+    fe = pl.lit(int(fallback_epoch)).cast(pl.Int64)
+    _ts_ok = pl.col("timestamp").cast(
+        pl.Float64, strict=False).fill_null(0) > _ENTUR_MIN_PLAUSIBLE_UNIX
+    _dep_ok = pl.col("departure_timestamp").cast(
+        pl.Float64, strict=False).fill_null(0) > _ENTUR_MIN_PLAUSIBLE_UNIX
+    out = df.with_columns(
+        pl.when(_dep_ok)
+        .then(pl.col("departure_timestamp").cast(pl.Int64, strict=False))
+        .otherwise(fe)
+        .alias("departure_timestamp")
+    ).with_columns(
+        pl.when(_ts_ok)
+        .then(pl.col("timestamp").cast(pl.Int64, strict=False))
+        .otherwise(pl.col("departure_timestamp"))
+        .alias("timestamp")
+    )
+    return out
+
+
 NORMALIZERS = {
     "avinor": normalize_avinor,
     "oslobysykkel": normalize_oslobysykkel,
@@ -675,6 +729,7 @@ def run_normalization(
     start_date: str | None = None,
     end_date: str | None = None,
     re_run_all: bool = False,
+    only_entur_delays: bool = False,
 ):
     """Run normalization for all available data sources from S3.
 
@@ -684,6 +739,7 @@ def run_normalization(
         end_date: End of interval (YYYY-MM-DD). If set, only dates <= end_date are processed.
         When start_date or end_date is set, only_today is ignored and files are listed for the whole source, then filtered by this interval.
         re_run_all: If True, process all raw files (ignore tracking list). Use for full re-normalization from scratch.
+        only_entur_delays: If True, skip avinor/oslo/vegvesen and only run Entur SIRI ET + trip-updates normalization.
     """
     print("Starting normalization process...\n")
     print("Reading files from S3 bucket...\n")
@@ -704,244 +760,249 @@ def run_normalization(
     sources = ["avinor", "oslobysykkel", "vegvesen",
                "vegvesen_travel_times", "vegvesen_traffic_situations"]
 
-    for source in sources:
-        # Filter files by type for each source
-        station_capacity = None  # Initialize for oslobysykkel
-        if source == "oslobysykkel":
-            # Only station_status files have the required columns
-            parquet_files_metadata = get_all_parquet_files_from_s3(
-                source, "*station_status*.parquet", with_metadata=True,
-                date_prefix=date_prefix)
+    if only_entur_delays:
+        print(
+            "Mode: samo Entur (SIRI ET + trip-updates) — ostali izvori se preskaču.\n")
 
-            # Load station capacity from station_information files
-            station_capacity = {}
-            info_files = get_all_parquet_files_from_s3(
-                source, "*station_information*.parquet",
-                date_prefix=date_prefix)
-            if info_files:
-                # Use the most recent station_information file (last in list, since sorted oldest first)
-                latest_info_key = info_files[-1]
-                try:
-                    info_df = read_parquet_from_s3(latest_info_key)
-                    if info_df is not None and ("station_id" in info_df.columns and
-                                                "capacity" in info_df.columns):
-                        # Create mapping: station_id -> capacity
-                        for row in info_df.iter_rows(named=True):
-                            station_capacity[row["station_id"]] = (
-                                row["capacity"])
-                        print(
-                            f"  Loaded capacity for {len(station_capacity)} "
-                            f"stations from {os.path.basename(latest_info_key)}")
-                except Exception as e:
-                    print(
-                        f"  Warning: Could not load station capacity: {e}")
-                    station_capacity = None
-            else:
-                station_capacity = None
-        elif source == "vegvesen":
-            parquet_files_metadata = get_all_parquet_files_from_s3(
-                source, "*weather_data*.parquet", with_metadata=True,
-                date_prefix=date_prefix)
-        elif source == "vegvesen_travel_times":
-            # Raw files live under vegvesen/ prefix
-            parquet_files_metadata = get_all_parquet_files_from_s3(
-                "vegvesen", "*travel_times*.parquet", with_metadata=True,
-                date_prefix=date_prefix)
-        elif source == "vegvesen_traffic_situations":
-            parquet_files_metadata = get_all_parquet_files_from_s3(
-                "vegvesen", "*traffic_situations*.parquet", with_metadata=True,
-                date_prefix=date_prefix)
-        else:
-            parquet_files_metadata = get_all_parquet_files_from_s3(
-                source, with_metadata=True,
-                date_prefix=date_prefix)
+    if not only_entur_delays:
+        for source in sources:
+            # Filter files by type for each source
+            station_capacity = None  # Initialize for oslobysykkel
+            if source == "oslobysykkel":
+                # Only station_status files have the required columns
+                parquet_files_metadata = get_all_parquet_files_from_s3(
+                    source, "*station_status*.parquet", with_metadata=True,
+                    date_prefix=date_prefix)
 
-        if not parquet_files_metadata:
-            print(f"{source}: No parquet files found on S3.")
-            continue
-
-        # Load already normalized files for this source (unless re_run_all)
-        normalized_files = set() if re_run_all else load_normalized_files(source)
-        files_to_process_metadata = [
-            f for f in parquet_files_metadata
-            if f["key"] not in normalized_files
-        ]
-        if not files_to_process_metadata:
-            print(f"{source}: All files already normalized. Skipping.\n")
-            continue
-
-        # Group files by date
-        files_by_date = group_files_by_date(files_to_process_metadata)
-        sorted_dates = sorted(files_by_date.keys())
-        if use_interval:
-            sorted_dates = _filter_dates_to_interval(
-                sorted_dates, start_date, end_date)
-        elif only_today:
-            sorted_dates = [d for d in sorted_dates if d == today_str]
-        if not sorted_dates:
-            if only_today and not use_interval:
-                print(f"{source}: No files from today ({today_str}). Skipping.\n")
-            else:
-                print(f"{source}: No files in selected interval. Skipping.\n")
-            continue
-
-        print(f"{source}: Found {len(files_to_process_metadata)} files to process across {len(sorted_dates)} days")
-        print(f"{source}: Processing by date (oldest first)...\n")
-
-        # Process each day separately
-        total_processed = 0
-        total_errors = 0
-        all_newly_normalized = []
-
-        for date_str in sorted_dates:
-            files_for_date = files_by_date[date_str]
-            print(f"{source}: Processing {date_str} ({len(files_for_date)} files)")
-
-            all_normalized = []
-            processed = 0
-            errors = 0
-            newly_normalized = []  # Track newly normalized files for this day
-
-            # Avinor: load all raw files for this date, dedupe by uniqueID (one row per flight), then normalize once
-            if source == "avinor" and files_for_date:
-                raw_dfs = []
-                n_total = len(files_for_date)
-                for idx, s3_key in enumerate(files_for_date):
-                    if (idx + 1) % 100 == 0 or idx == 0:
-                        print(
-                            f"  Avinor {date_str}: loading {idx + 1}/{n_total} ...")
-                    df = read_parquet_from_s3(s3_key)
-                    if df is None:
-                        errors += 1
-                        continue
-                    raw_dfs.append(df)
-                if raw_dfs:
-                    # Unify schemas (String vs Null etc.) so concat does not raise SchemaError
-                    raw_dfs = _unify_avinor_schemas(raw_dfs)
-                    combined_raw = pl.concat(raw_dfs, how="diagonal")
-                    if "uniqueID" in combined_raw.columns:
-                        n_before = combined_raw.height
-                        combined_raw = combined_raw.unique(
-                            subset=["uniqueID"], keep="last")
-                        n_after = combined_raw.height
-                        if n_before > n_after:
-                            print(
-                                f"  Avinor {date_str}: deduplicated {n_before} -> {n_after} unique flights (by uniqueID)")
-                    df_norm = NORMALIZERS[source](combined_raw)
-                    if df_norm.height > 0:
-                        all_normalized = [df_norm]
-                        processed = len(raw_dfs)
-                        newly_normalized = list(files_for_date)
-                        print(
-                            f"  ✓ {date_str}: {df_norm.height} records from {len(raw_dfs)} files (Avinor, one row per uniqueID)")
-            else:
-                for s3_key in files_for_date:
+                # Load station capacity from station_information files
+                station_capacity = {}
+                info_files = get_all_parquet_files_from_s3(
+                    source, "*station_information*.parquet",
+                    date_prefix=date_prefix)
+                if info_files:
+                    # Use the most recent station_information file (last in list, since sorted oldest first)
+                    latest_info_key = info_files[-1]
                     try:
+                        info_df = read_parquet_from_s3(latest_info_key)
+                        if info_df is not None and ("station_id" in info_df.columns and
+                                                    "capacity" in info_df.columns):
+                            # Create mapping: station_id -> capacity
+                            for row in info_df.iter_rows(named=True):
+                                station_capacity[row["station_id"]] = (
+                                    row["capacity"])
+                            print(
+                                f"  Loaded capacity for {len(station_capacity)} "
+                                f"stations from {os.path.basename(latest_info_key)}")
+                    except Exception as e:
+                        print(
+                            f"  Warning: Could not load station capacity: {e}")
+                        station_capacity = None
+                else:
+                    station_capacity = None
+            elif source == "vegvesen":
+                parquet_files_metadata = get_all_parquet_files_from_s3(
+                    source, "*weather_data*.parquet", with_metadata=True,
+                    date_prefix=date_prefix)
+            elif source == "vegvesen_travel_times":
+                # Raw files live under vegvesen/ prefix
+                parquet_files_metadata = get_all_parquet_files_from_s3(
+                    "vegvesen", "*travel_times*.parquet", with_metadata=True,
+                    date_prefix=date_prefix)
+            elif source == "vegvesen_traffic_situations":
+                parquet_files_metadata = get_all_parquet_files_from_s3(
+                    "vegvesen", "*traffic_situations*.parquet", with_metadata=True,
+                    date_prefix=date_prefix)
+            else:
+                parquet_files_metadata = get_all_parquet_files_from_s3(
+                    source, with_metadata=True,
+                    date_prefix=date_prefix)
+
+            if not parquet_files_metadata:
+                print(f"{source}: No parquet files found on S3.")
+                continue
+
+            # Load already normalized files for this source (unless re_run_all)
+            normalized_files = set() if re_run_all else load_normalized_files(source)
+            files_to_process_metadata = [
+                f for f in parquet_files_metadata
+                if f["key"] not in normalized_files
+            ]
+            if not files_to_process_metadata:
+                print(f"{source}: All files already normalized. Skipping.\n")
+                continue
+
+            # Group files by date
+            files_by_date = group_files_by_date(files_to_process_metadata)
+            sorted_dates = sorted(files_by_date.keys())
+            if use_interval:
+                sorted_dates = _filter_dates_to_interval(
+                    sorted_dates, start_date, end_date)
+            elif only_today:
+                sorted_dates = [d for d in sorted_dates if d == today_str]
+            if not sorted_dates:
+                if only_today and not use_interval:
+                    print(f"{source}: No files from today ({today_str}). Skipping.\n")
+                else:
+                    print(f"{source}: No files in selected interval. Skipping.\n")
+                continue
+
+            print(f"{source}: Found {len(files_to_process_metadata)} files to process across {len(sorted_dates)} days")
+            print(f"{source}: Processing by date (oldest first)...\n")
+
+            # Process each day separately
+            total_processed = 0
+            total_errors = 0
+            all_newly_normalized = []
+
+            for date_str in sorted_dates:
+                files_for_date = files_by_date[date_str]
+                print(f"{source}: Processing {date_str} ({len(files_for_date)} files)")
+
+                all_normalized = []
+                processed = 0
+                errors = 0
+                newly_normalized = []  # Track newly normalized files for this day
+
+                # Avinor: load all raw files for this date, dedupe by uniqueID (one row per flight), then normalize once
+                if source == "avinor" and files_for_date:
+                    raw_dfs = []
+                    n_total = len(files_for_date)
+                    for idx, s3_key in enumerate(files_for_date):
+                        if (idx + 1) % 100 == 0 or idx == 0:
+                            print(
+                                f"  Avinor {date_str}: loading {idx + 1}/{n_total} ...")
                         df = read_parquet_from_s3(s3_key)
                         if df is None:
                             errors += 1
-                            print(
-                                f"  ✗ {os.path.basename(s3_key)}: Error reading from S3")
                             continue
-
-                        # Pass station_capacity to oslobysykkel normalizer
-                        if source == "oslobysykkel" and station_capacity:
-                            df_norm = NORMALIZERS[source](
-                                df, station_capacity=station_capacity)
-                        else:
-                            df_norm = NORMALIZERS[source](df)
-
+                        raw_dfs.append(df)
+                    if raw_dfs:
+                        # Unify schemas (String vs Null etc.) so concat does not raise SchemaError
+                        raw_dfs = _unify_avinor_schemas(raw_dfs)
+                        combined_raw = pl.concat(raw_dfs, how="diagonal")
+                        if "uniqueID" in combined_raw.columns:
+                            n_before = combined_raw.height
+                            combined_raw = combined_raw.unique(
+                                subset=["uniqueID"], keep="last")
+                            n_after = combined_raw.height
+                            if n_before > n_after:
+                                print(
+                                    f"  Avinor {date_str}: deduplicated {n_before} -> {n_after} unique flights (by uniqueID)")
+                        df_norm = NORMALIZERS[source](combined_raw)
                         if df_norm.height > 0:
-                            all_normalized.append(df_norm)
-                            processed += 1
-                            # Track as normalized
-                            newly_normalized.append(s3_key)
+                            all_normalized = [df_norm]
+                            processed = len(raw_dfs)
+                            newly_normalized = list(files_for_date)
                             print(
-                                f"  ✓ {os.path.basename(s3_key)}: {df_norm.height} records")
-                        else:
+                                f"  ✓ {date_str}: {df_norm.height} records from {len(raw_dfs)} files (Avinor, one row per uniqueID)")
+                else:
+                    for s3_key in files_for_date:
+                        try:
+                            df = read_parquet_from_s3(s3_key)
+                            if df is None:
+                                errors += 1
+                                print(
+                                    f"  ✗ {os.path.basename(s3_key)}: Error reading from S3")
+                                continue
+
+                            # Pass station_capacity to oslobysykkel normalizer
+                            if source == "oslobysykkel" and station_capacity:
+                                df_norm = NORMALIZERS[source](
+                                    df, station_capacity=station_capacity)
+                            else:
+                                df_norm = NORMALIZERS[source](df)
+
+                            if df_norm.height > 0:
+                                all_normalized.append(df_norm)
+                                processed += 1
+                                # Track as normalized
+                                newly_normalized.append(s3_key)
+                                print(
+                                    f"  ✓ {os.path.basename(s3_key)}: {df_norm.height} records")
+                            else:
+                                print(
+                                    f"  - {os.path.basename(s3_key)}: empty, skipping")
+                        except Exception as e:
+                            errors += 1
                             print(
-                                f"  - {os.path.basename(s3_key)}: empty, skipping")
-                    except Exception as e:
-                        errors += 1
-                        print(
-                            f"  ✗ {os.path.basename(s3_key)}: Error -> {str(e)[:80]}")
+                                f"  ✗ {os.path.basename(s3_key)}: Error -> {str(e)[:80]}")
 
-            if all_normalized:
-                # Ensure all dataframes have the same schema before combining
-                # Get the schema from the first dataframe
-                first_schema = all_normalized[0].schema
+                if all_normalized:
+                    # Ensure all dataframes have the same schema before combining
+                    # Get the schema from the first dataframe
+                    first_schema = all_normalized[0].schema
 
-                # Cast all dataframes to match the first schema
-                normalized_aligned = []
-                for df in all_normalized:
-                    # Align columns and types to match first schema
-                    df_aligned = df.select([
-                        pl.col(col).cast(first_schema[col]) if col in df.columns
-                        else pl.lit(None).cast(first_schema[col]).alias(col)
-                        for col in first_schema.keys()
-                    ])
-                    normalized_aligned.append(df_aligned)
+                    # Cast all dataframes to match the first schema
+                    normalized_aligned = []
+                    for df in all_normalized:
+                        # Align columns and types to match first schema
+                        df_aligned = df.select([
+                            pl.col(col).cast(first_schema[col]) if col in df.columns
+                            else pl.lit(None).cast(first_schema[col]).alias(col)
+                            for col in first_schema.keys()
+                        ])
+                        normalized_aligned.append(df_aligned)
 
-                # Combine all normalized dataframes for this day
-                combined_df = pl.concat(normalized_aligned)
+                    # Combine all normalized dataframes for this day
+                    combined_df = pl.concat(normalized_aligned)
 
-                # Vegvesen: raw files can contain historical timestamps; keep only rows for this day
-                if source == "vegvesen" and "timestamp" in combined_df.columns:
-                    n_before = combined_df.height
-                    combined_df = combined_df.filter(
-                        pl.col("timestamp").dt.strftime("%Y-%m-%d") == date_str
-                    )
-                    n_after = combined_df.height
-                    if n_before > n_after:
-                        print(
-                            f"  Vegvesen {date_str}: filtered to date "
-                            f"({n_before} -> {n_after} rows)"
+                    # Vegvesen: raw files can contain historical timestamps; keep only rows for this day
+                    if source == "vegvesen" and "timestamp" in combined_df.columns:
+                        n_before = combined_df.height
+                        combined_df = combined_df.filter(
+                            pl.col("timestamp").dt.strftime("%Y-%m-%d") == date_str
                         )
-                # Traffic situations: keep only rows for this day (minute column)
-                if source == "vegvesen_traffic_situations" and "minute" in combined_df.columns:
-                    n_before = combined_df.height
-                    combined_df = combined_df.filter(
-                        pl.col("minute").dt.strftime("%Y-%m-%d") == date_str
-                    )
-                    n_after = combined_df.height
-                    if n_before > n_after:
-                        print(
-                            f"  Vegvesen traffic_situations {date_str}: filtered to date "
-                            f"({n_before} -> {n_after} rows)"
+                        n_after = combined_df.height
+                        if n_before > n_after:
+                            print(
+                                f"  Vegvesen {date_str}: filtered to date "
+                                f"({n_before} -> {n_after} rows)"
+                            )
+                    # Traffic situations: keep only rows for this day (minute column)
+                    if source == "vegvesen_traffic_situations" and "minute" in combined_df.columns:
+                        n_before = combined_df.height
+                        combined_df = combined_df.filter(
+                            pl.col("minute").dt.strftime("%Y-%m-%d") == date_str
                         )
+                        n_after = combined_df.height
+                        if n_before > n_after:
+                            print(
+                                f"  Vegvesen traffic_situations {date_str}: filtered to date "
+                                f"({n_before} -> {n_after} rows)"
+                            )
 
-                # Save directly to S3 with date in path
-                timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-                parquet_s3_key = f"normalized/{date_str}/{source}_normalized_{timestamp}.parquet"
+                    # Save directly to S3 with date in path
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+                    parquet_s3_key = f"normalized/{date_str}/{source}_normalized_{timestamp}.parquet"
 
-                # Convert Polars DataFrame to pandas for S3 upload
-                df_pandas = combined_df.to_pandas()
-                save_parquet_to_s3(df_pandas, parquet_s3_key)
+                    # Convert Polars DataFrame to pandas for S3 upload
+                    df_pandas = combined_df.to_pandas()
+                    save_parquet_to_s3(df_pandas, parquet_s3_key)
 
-                # Mark processed files as normalized in tracking file
-                if newly_normalized:
-                    mark_files_as_normalized(source, newly_normalized)
-                    all_newly_normalized.extend(newly_normalized)
+                    # Mark processed files as normalized in tracking file
+                    if newly_normalized:
+                        mark_files_as_normalized(source, newly_normalized)
+                        all_newly_normalized.extend(newly_normalized)
 
-                total_processed += processed
-                total_errors += errors
+                    total_processed += processed
+                    total_errors += errors
 
+                    print(
+                        f"  ✓ {date_str}: Saved to S3 -> {parquet_s3_key} "
+                        f"({combined_df.height} total records from {processed} files)")
+                    if errors > 0:
+                        print(f"  ⚠ {date_str}: {errors} errors")
+                    print()
+
+            # Summary for this source
+            if all_newly_normalized:
                 print(
-                    f"  ✓ {date_str}: Saved to S3 -> {parquet_s3_key} "
-                    f"({combined_df.height} total records from {processed} files)")
-                if errors > 0:
-                    print(f"  ⚠ {date_str}: {errors} errors")
-                print()
-
-        # Summary for this source
-        if all_newly_normalized:
-            print(
-                f"{source}: Summary - Processed {total_processed} files across {len(sorted_dates)} days")
-            print(
-                f"{source}: Marked {len(all_newly_normalized)} files as normalized in tracking file\n")
-        else:
-            print(
-                f"{source}: No valid data to save (processed: {total_processed}, errors: {total_errors})\n")
+                    f"{source}: Summary - Processed {total_processed} files across {len(sorted_dates)} days")
+                print(
+                    f"{source}: Marked {len(all_newly_normalized)} files as normalized in tracking file\n")
+            else:
+                print(
+                    f"{source}: No valid data to save (processed: {total_processed}, errors: {total_errors})\n")
 
     # --- Entur delays: SIRI ET and/or GTFS-RT trip-updates (same schema: trip_id, route_id, stop_time_updates) ---
     source = "entur_siri_et"
@@ -1009,6 +1070,11 @@ def run_normalization(
                                     pl.col("timestamp") == 0).height
                             df_norm = normalize_entur_trip_updates(df)
                             if df_norm.height > 0:
+                                snap_epoch = entur_snapshot_epoch_from_s3_key(
+                                    date_str, s3_key)
+                                if snap_epoch is not None:
+                                    df_norm = fill_entur_bad_timestamps_with_epoch(
+                                        df_norm, snap_epoch)
                                 all_normalized.append(df_norm)
                                 newly_normalized.append(s3_key)
                         except Exception as e:
@@ -1021,9 +1087,7 @@ def run_normalization(
                             for d in all_normalized
                         ]
                         combined_df = pl.concat(aligned)
-                        # Kada raw nema RecordedAtTime / start_date u redu, timestamp i departure su 0/null —
-                        # analyze_weather_impact onda ne može da filtrira po W-A. Datum foldera na S3
-                        # (date_str) je pouzdan servisni dan za taj batch.
+                        # Ostatak bez vremena i bez parsiranog HHMMSS u imenu fajla — ponoć UTC (date_str).
                         _path_epoch = (
                             pl.lit(date_str)
                             .str.strptime(pl.Date, "%Y-%m-%d", strict=False)
@@ -1033,9 +1097,9 @@ def run_normalization(
                             .cast(pl.Int64)
                         )
                         _ts_ok = pl.col("timestamp").cast(
-                            pl.Float64, strict=False).fill_null(0) > 946684800
+                            pl.Float64, strict=False).fill_null(0) > _ENTUR_MIN_PLAUSIBLE_UNIX
                         _dep_ok = pl.col("departure_timestamp").cast(
-                            pl.Float64, strict=False).fill_null(0) > 946684800
+                            pl.Float64, strict=False).fill_null(0) > _ENTUR_MIN_PLAUSIBLE_UNIX
                         combined_df = combined_df.with_columns(
                             pl.when(_dep_ok)
                             .then(pl.col("departure_timestamp").cast(pl.Int64, strict=False))
@@ -1106,6 +1170,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Ignore normalized tracking: process all raw files (full re-normalization from scratch).",
     )
+    parser.add_argument(
+        "--only-entur-delays",
+        action="store_true",
+        help="Preskoči sve izvore osim Entur (SIRI ET + trip-updates). Koristi sa --start-date/--end-date ili --all.",
+    )
     args = parser.parse_args()
 
     only_today = True
@@ -1119,9 +1188,17 @@ if __name__ == "__main__":
         if start_date is not None or end_date is not None:
             only_today = False
 
+    if args.only_entur_delays and not args.all and not (
+        args.start_date or args.end_date
+    ):
+        parser.error(
+            "--only-entur-delays zahteva --start-date i/ili --end-date, ili --all."
+        )
+
     run_normalization(
         only_today=only_today,
         start_date=start_date,
         end_date=end_date,
         re_run_all=args.re_run_all,
+        only_entur_delays=args.only_entur_delays,
     )
