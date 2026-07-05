@@ -1,0 +1,9 @@
+Period,Mode,Hours,Anomalies,Anomaly rate (%),Score μ,Score σ,Score min,Precision* (inj.),Features
+W-B (2026-01-31 – 2026-02-07),Public Transit,192,21,10.94,0.0649,0.0610,-0.2010,0.48,"pax_load, delay_min, headway_min"
+W-B (2026-01-31 – 2026-02-07),Bike-Share,192,30,15.62,0.0516,0.0593,-0.1959,0.30,"trips_started, occupancy_rate, bikes_available"
+W-B (2026-01-31 – 2026-02-07),Road Traffic,192,23,11.98,0.0596,0.0628,-0.1947,0.48,"vehicle_count, avg_speed_kmh, congestion_idx"
+W-B (2026-01-31 – 2026-02-07),Aviation,192,28,14.58,0.0531,0.0621,-0.1823,0.36,"pax_flow, flight_delay_min, gate_utilisation"
+W-C (2026-03-07 – 2026-03-14),Public Transit,192,25,13.02,0.0708,0.0641,-0.2136,0.40,"pax_load, delay_min, headway_min"
+W-C (2026-03-07 – 2026-03-14),Bike-Share,192,27,14.06,0.0481,0.0526,-0.1530,0.33,"trips_started, occupancy_rate, bikes_available"
+W-C (2026-03-07 – 2026-03-14),Road Traffic,192,28,14.58,0.0640,0.0684,-0.2110,0.39,"vehicle_count, avg_speed_kmh, congestion_idx"
+W-C (2026-03-07 – 2026-03-14),Aviation,192,26,13.54,0.0514,0.0654,-0.2217,0.35,"pax_flow, flight_delay_min, gate_utilisation"

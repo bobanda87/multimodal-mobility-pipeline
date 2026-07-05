@@ -683,6 +683,7 @@ def analyze_weather_impact(
                                                                     
                                                                       
     correlations = {}
+    correlation_n = {}
     if combined.height > 1:
         bikes_col = "bikes_in_use" if "bikes_in_use" in combined.columns else "bikes_available"
         if bikes_col in combined.columns:
@@ -692,6 +693,7 @@ def analyze_weather_impact(
             )
             print(
                 f"Bikes data overlap: {bikes_data.height} records with both temperature and bikes")
+            correlation_n["temperature_vs_bysykkel"] = bikes_data.height
             if bikes_data.height > 1:
                 corr_bikes = bikes_data.select(
                     pl.corr("road_temperature", bikes_col)
@@ -713,6 +715,7 @@ def analyze_weather_impact(
             )
             print(
                 f"Transport data overlap: {transport_data.height} records with both temperature and transport")
+            correlation_n["temperature_vs_public_transport"] = transport_data.height
             if transport_data.height > 1:
                 corr_transport = transport_data.select(
                     pl.corr("road_temperature", "public_transport_activity")
@@ -733,6 +736,7 @@ def analyze_weather_impact(
                 (pl.col("road_temperature").is_not_null())
                 & (pl.col("flight_activity").is_not_null())
             )
+            correlation_n["temperature_vs_flight_activity"] = flight_data.height
             if flight_data.height > 1:
                 corr_flights = flight_data.select(
                     pl.corr("road_temperature", "flight_activity")
@@ -752,6 +756,7 @@ def analyze_weather_impact(
                 (pl.col("road_temperature").is_not_null()) & (
                     pl.col("multimodal_activity").is_not_null())
             )
+            correlation_n["temperature_vs_multimodal"] = mm_data.height
             if mm_data.height > 1:
                 corr_mm = mm_data.select(
                     pl.corr("road_temperature", "multimodal_activity"))[0, 0]
@@ -770,6 +775,7 @@ def analyze_weather_impact(
                 (pl.col("road_temperature").is_not_null()) & (
                     pl.col("mean_delay_sec").is_not_null())
             )
+            correlation_n["temperature_vs_delay"] = delay_data.height
             if delay_data.height > 1:
                 corr_delay = delay_data.select(
                     pl.corr("road_temperature", "mean_delay_sec"))[0, 0]
@@ -1001,6 +1007,7 @@ def analyze_weather_impact(
 
     return {
         "correlations": correlations,
+        "correlation_n": correlation_n,
         "interpretation": interpretation,
         "sample_size_minutes": combined.height,
         "date_range": date_range,
