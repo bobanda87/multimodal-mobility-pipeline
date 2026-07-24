@@ -243,9 +243,18 @@ def fetch_osm_basemap(lat_min: float, lat_max: float, lon_min: float, lon_max: f
     for xi, x in enumerate(range(x_min, x_max + 1)):
         for yi, y in enumerate(range(y_min, y_max + 1)):
             url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
-            resp = requests.get(url, headers=headers, timeout=15)
-            resp.raise_for_status()
-            tile_img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+            last_exc = None
+            for attempt in range(4):
+                try:
+                    resp = requests.get(url, headers=headers, timeout=30)
+                    resp.raise_for_status()
+                    tile_img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                    break
+                except Exception as e:
+                    last_exc = e
+                    time.sleep(1.5 * (attempt + 1))
+            else:
+                raise last_exc
             mosaic.paste(tile_img, (xi * tile_size, yi * tile_size))
             time.sleep(0.2)  # stay well under OSM's usage-policy rate limit
 
