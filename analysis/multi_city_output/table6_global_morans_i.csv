@@ -1,0 +1,13 @@
+City,Metric,n zones,I (W-B),p (W-B),I (W-C),p (W-C)
+Oslo,activity,85,+0.364,0.002,+0.324,0.002
+Oslo,delay,85,+0.320,0.002,+0.227,0.002
+Bergen,activity,43,+0.090,0.137,+0.096,0.134
+Bergen,delay,43,+0.296,0.007,+0.187,0.043
+Trondheim,activity,41,+0.172,0.038,+0.172,0.037
+Trondheim,delay,41,+0.129,0.067,+0.152,0.050
+Stavanger,activity,25,+0.284,0.043,+0.279,0.050
+Stavanger,delay,25,+0.056,0.299,+0.014,0.350
+Kristiansand,activity,25,+0.190,0.057,+0.184,0.061
+Kristiansand,delay,25,+0.343,0.006,+0.327,0.007
+Tromso,activity,23,-0.028,0.410,-0.032,0.415
+Tromso,delay,23,+0.463,0.007,+0.305,0.037

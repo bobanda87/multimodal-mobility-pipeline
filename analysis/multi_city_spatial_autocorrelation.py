@@ -150,15 +150,17 @@ def load_stop_level_pt_for_operator(operator: str, dates: list[str]) -> pl.DataF
                 continue
             if df is None or df.height == 0 or "stop_time_updates" not in df.columns:
                 continue
+            fetch_minute = f["last_modified"].replace(second=0, microsecond=0)
             exploded = (
                 df.select("stop_time_updates")
                 .explode("stop_time_updates")
                 .unnest("stop_time_updates")
                 .select(["stop_id", "arrival_delay"])
+                .with_columns(pl.lit(fetch_minute).alias("minute"))
             )
             frames.append(exploded)
     if not frames:
-        return pl.DataFrame(schema={"stop_id": pl.Utf8, "arrival_delay": pl.Int64})
+        return pl.DataFrame(schema={"stop_id": pl.Utf8, "arrival_delay": pl.Int64, "minute": pl.Datetime})
     return pl.concat(frames, how="vertical_relaxed")
 
 
@@ -198,6 +200,91 @@ def build_city_window_zones(city_name: str, city_cfg: dict, start, end,
     )
     zone_df = zones.join(agg, on="zone_id", how="left").sort(["cx", "cy"])
     return {"city": city_name, "zones": zone_df}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Peak vs. off-peak activity ratio per zone (same PEAK_HOURS definition as
+# Section 3.4 / peak_offpeak_table.py), for Moran's I on the ratio itself:
+# are zones with similar peak/off-peak intensity spatially clustered?
+# ─────────────────────────────────────────────────────────────────────────
+
+PEAK_HOURS = {7, 8, 9, 15, 16, 17}
+
+
+def _peak_flag(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns([
+        pl.col("minute").dt.weekday().alias("_wd"),   # ISO: 1=Mon..7=Sun
+        pl.col("minute").dt.hour().alias("_hr"),
+    ]).with_columns([
+        ((pl.col("_wd") <= 5) & pl.col("_hr").is_in(list(PEAK_HOURS))).alias("is_peak")
+    ])
+
+
+def build_city_window_peak_ratio(city_name: str, city_cfg: dict, start, end,
+                                 stop_coords: pl.DataFrame | None = None) -> dict:
+    if stop_coords is None:
+        stop_coords = load_stop_coords()
+
+    zoned_stops = assign_grid_zones(stop_coords, city_name, city_cfg["lat_c"], city_cfg["lon_c"],
+                                    city_cfg["dlat"], city_cfg["dlon"])
+    if zoned_stops.height == 0:
+        return {"city": city_name, "note": "no grid cells cleared the min-stops threshold"}
+
+    zones = zone_summary(zoned_stops)
+    stop_to_zone = zoned_stops.select(["stop_id", "zone_id"]).unique()
+
+    dates = _dates_in_window(start, end)
+    pt = load_stop_level_pt_for_operator(city_cfg["operator"], dates)
+    if pt.height == 0:
+        return {"city": city_name, "note": "no stop-level PT data found for this window"}
+
+    joined = pt.join(stop_to_zone, on="stop_id", how="inner")
+    if joined.height == 0:
+        return {"city": city_name, "note": "no PT records matched a retained zone"}
+
+    zone_minute = joined.group_by(["zone_id", "minute"]).agg(pl.len().alias("activity"))
+    flagged = _peak_flag(zone_minute)
+
+    per_zone = (
+        flagged.group_by("zone_id")
+        .agg([
+            pl.col("activity").filter(pl.col("is_peak")).mean().alias("mean_peak"),
+            pl.col("activity").filter(~pl.col("is_peak")).mean().alias("mean_offpeak"),
+            pl.col("activity").filter(pl.col("is_peak")).len().alias("n_peak_minutes"),
+            pl.col("activity").filter(~pl.col("is_peak")).len().alias("n_offpeak_minutes"),
+        ])
+        .with_columns(
+            pl.when(pl.col("mean_offpeak") > 0)
+            .then(pl.col("mean_peak") / pl.col("mean_offpeak"))
+            .otherwise(None)
+            .alias("ratio")
+        )
+    )
+    zone_df = zones.join(per_zone, on="zone_id", how="left").sort(["cx", "cy"])
+    return {"city": city_name, "zones": zone_df}
+
+
+def build_peak_ratio_report() -> dict:
+    stop_coords = load_stop_coords()
+    report = {}
+    for p in WINDOWS:
+        win = p["name"].split(" ")[0]
+        print(f"\n=== {win} (peak/off-peak ratio) ===")
+        report[win] = {}
+        for city_name, city_cfg in CITIES.items():
+            print(f"  {city_name} ...")
+            res = build_city_window_peak_ratio(city_name, city_cfg, p["start_date"], p["end_date"],
+                                               stop_coords=stop_coords)
+            if "note" in res:
+                report[win][city_name] = {"note": res["note"]}
+                print(f"    {res['note']}")
+                continue
+            m = compute_morans(res["zones"], "ratio")
+            report[win][city_name] = {"zone_df": res["zones"], "metrics": {"ratio": m}}
+            if m is not None:
+                print(f"    ratio    n={m['n_zones']:3d} avg_neighbors={m['avg_neighbors']:.1f} "
+                     f"I={m['I']:+.3f} p={m['p_sim']:.3f}")
+    return report
 
 
 # ─────────────────────────────────────────────────────────────────────────
