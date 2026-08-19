@@ -66,12 +66,48 @@ from analysis.pt_spatial_zones import (
 from utils.s3_upload import list_parquet_files_from_s3, read_parquet_from_s3
 
 CITIES = {
-    "Oslo": {"operator": "RUT", "lat_c": 59.925, "lon_c": 10.725, "dlat": 0.075, "dlon": 0.125},
-    "Bergen": {"operator": "SKY", "lat_c": 60.39, "lon_c": 5.32, "dlat": 0.075, "dlon": 0.125},
-    "Trondheim": {"operator": "ATB", "lat_c": 63.43, "lon_c": 10.39, "dlat": 0.075, "dlon": 0.125},
-    "Stavanger": {"operator": "KOL", "lat_c": 58.97, "lon_c": 5.73, "dlat": 0.075, "dlon": 0.125},
-    "Kristiansand": {"operator": "AKT", "lat_c": 58.15, "lon_c": 7.99, "dlat": 0.06, "dlon": 0.10},
-    "Tromso": {"operator": "TRO", "lat_c": 69.65, "lon_c": 18.96, "dlat": 0.06, "dlon": 0.10},
+    "Oslo": {
+        "operator": "RUT",
+        "lat_c": 59.925,
+        "lon_c": 10.725,
+        "dlat": 0.075,
+        "dlon": 0.125,
+    },
+    "Bergen": {
+        "operator": "SKY",
+        "lat_c": 60.39,
+        "lon_c": 5.32,
+        "dlat": 0.075,
+        "dlon": 0.125,
+    },
+    "Trondheim": {
+        "operator": "ATB",
+        "lat_c": 63.43,
+        "lon_c": 10.39,
+        "dlat": 0.075,
+        "dlon": 0.125,
+    },
+    "Stavanger": {
+        "operator": "KOL",
+        "lat_c": 58.97,
+        "lon_c": 5.73,
+        "dlat": 0.075,
+        "dlon": 0.125,
+    },
+    "Kristiansand": {
+        "operator": "AKT",
+        "lat_c": 58.15,
+        "lon_c": 7.99,
+        "dlat": 0.06,
+        "dlon": 0.10,
+    },
+    "Tromso": {
+        "operator": "TRO",
+        "lat_c": 69.65,
+        "lon_c": 18.96,
+        "dlat": 0.06,
+        "dlon": 0.10,
+    },
 }
 
 CELL_KM = 1.0
@@ -94,9 +130,17 @@ def _dates_in_window(start, end) -> list[str]:
 # Grid zoning
 # ─────────────────────────────────────────────────────────────────────────
 
-def assign_grid_zones(stop_coords: pl.DataFrame, city_name: str, lat_c: float, lon_c: float,
-                      dlat: float, dlon: float, cell_km: float = CELL_KM,
-                      min_stops: int = MIN_STOPS_PER_CELL) -> pl.DataFrame:
+
+def assign_grid_zones(
+    stop_coords: pl.DataFrame,
+    city_name: str,
+    lat_c: float,
+    lon_c: float,
+    dlat: float,
+    dlon: float,
+    cell_km: float = CELL_KM,
+    min_stops: int = MIN_STOPS_PER_CELL,
+) -> pl.DataFrame:
     """
     Filter stops to the city bbox, assign each to a 1km grid cell, and keep
     only cells with >= min_stops stops. Returns one row per RETAINED stop
@@ -104,32 +148,44 @@ def assign_grid_zones(stop_coords: pl.DataFrame, city_name: str, lat_c: float, l
     are excluded entirely (they never appear in the returned frame).
     """
     sub = stop_coords.filter(
-        (pl.col("stop_lat") - lat_c).abs().lt(dlat) & (pl.col("stop_lon") - lon_c).abs().lt(dlon)
+        (pl.col("stop_lat") - lat_c).abs().lt(dlat)
+        & (pl.col("stop_lon") - lon_c).abs().lt(dlon)
     )
     lat_cell_deg = cell_km / 111.0
     lon_cell_deg = cell_km / (111.0 * math.cos(math.radians(lat_c)))
-    cells = sub.with_columns([
-        ((pl.col("stop_lat") - (lat_c - dlat)) / lat_cell_deg).floor().cast(pl.Int32).alias("cx"),
-        ((pl.col("stop_lon") - (lon_c - dlon)) / lon_cell_deg).floor().cast(pl.Int32).alias("cy"),
-    ])
+    cells = sub.with_columns(
+        [
+            ((pl.col("stop_lat") - (lat_c - dlat)) / lat_cell_deg)
+            .floor()
+            .cast(pl.Int32)
+            .alias("cx"),
+            ((pl.col("stop_lon") - (lon_c - dlon)) / lon_cell_deg)
+            .floor()
+            .cast(pl.Int32)
+            .alias("cy"),
+        ]
+    )
     counts = cells.group_by(["cx", "cy"]).agg(pl.len().alias("n_stops_in_cell"))
     kept_cells = counts.filter(pl.col("n_stops_in_cell") >= min_stops)
     retained = cells.join(kept_cells.select(["cx", "cy"]), on=["cx", "cy"], how="inner")
     return retained.with_columns(
-        (pl.lit(f"{city_name}_") + pl.col("cx").cast(pl.Utf8) + pl.lit("_") + pl.col("cy").cast(pl.Utf8))
-        .alias("zone_id")
+        (
+            pl.lit(f"{city_name}_")
+            + pl.col("cx").cast(pl.Utf8)
+            + pl.lit("_")
+            + pl.col("cy").cast(pl.Utf8)
+        ).alias("zone_id")
     )
 
 
 def zone_summary(zoned_stops: pl.DataFrame) -> pl.DataFrame:
     """One row per zone: cx, cy, centroid lat/lon, n_stops."""
-    return (
-        zoned_stops.group_by(["zone_id", "cx", "cy"])
-        .agg([
+    return zoned_stops.group_by(["zone_id", "cx", "cy"]).agg(
+        [
             pl.col("stop_lat").mean().alias("centroid_lat"),
             pl.col("stop_lon").mean().alias("centroid_lon"),
             pl.len().alias("n_stops"),
-        ])
+        ]
     )
 
 
@@ -138,11 +194,16 @@ def zone_summary(zoned_stops: pl.DataFrame) -> pl.DataFrame:
 # to accept any Entur operator prefix, not just RUT)
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def load_stop_level_pt_for_operator(operator: str, dates: list[str]) -> pl.DataFrame:
     frames = []
     for d in dates:
-        files = list_parquet_files_from_s3("entur", with_metadata=True, date_prefix=d,
-                                            pattern=f"{operator}_siri_et_*.parquet")
+        files = list_parquet_files_from_s3(
+            "entur",
+            with_metadata=True,
+            date_prefix=d,
+            pattern=f"{operator}_siri_et_*.parquet",
+        )
         for f in files:
             try:
                 df = read_parquet_from_s3(f["key"])
@@ -160,7 +221,13 @@ def load_stop_level_pt_for_operator(operator: str, dates: list[str]) -> pl.DataF
             )
             frames.append(exploded)
     if not frames:
-        return pl.DataFrame(schema={"stop_id": pl.Utf8, "arrival_delay": pl.Int64, "minute": pl.Datetime})
+        return pl.DataFrame(
+            schema={
+                "stop_id": pl.Utf8,
+                "arrival_delay": pl.Int64,
+                "minute": pl.Datetime,
+            }
+        )
     return pl.concat(frames, how="vertical_relaxed")
 
 
@@ -168,15 +235,26 @@ def load_stop_level_pt_for_operator(operator: str, dates: list[str]) -> pl.DataF
 # Per-city, per-window zone-level dataset
 # ─────────────────────────────────────────────────────────────────────────
 
-def build_city_window_zones(city_name: str, city_cfg: dict, start, end,
-                            stop_coords: pl.DataFrame | None = None) -> dict:
+
+def build_city_window_zones(
+    city_name: str, city_cfg: dict, start, end, stop_coords: pl.DataFrame | None = None
+) -> dict:
     if stop_coords is None:
         stop_coords = load_stop_coords()
 
-    zoned_stops = assign_grid_zones(stop_coords, city_name, city_cfg["lat_c"], city_cfg["lon_c"],
-                                    city_cfg["dlat"], city_cfg["dlon"])
+    zoned_stops = assign_grid_zones(
+        stop_coords,
+        city_name,
+        city_cfg["lat_c"],
+        city_cfg["lon_c"],
+        city_cfg["dlat"],
+        city_cfg["dlon"],
+    )
     if zoned_stops.height == 0:
-        return {"city": city_name, "note": "no grid cells cleared the min-stops threshold"}
+        return {
+            "city": city_name,
+            "note": "no grid cells cleared the min-stops threshold",
+        }
 
     zones = zone_summary(zoned_stops)
     stop_to_zone = zoned_stops.select(["stop_id", "zone_id"]).unique()
@@ -184,19 +262,21 @@ def build_city_window_zones(city_name: str, city_cfg: dict, start, end,
     dates = _dates_in_window(start, end)
     pt = load_stop_level_pt_for_operator(city_cfg["operator"], dates)
     if pt.height == 0:
-        return {"city": city_name, "note": "no stop-level PT data found for this window"}
+        return {
+            "city": city_name,
+            "note": "no stop-level PT data found for this window",
+        }
 
     joined = pt.join(stop_to_zone, on="stop_id", how="inner")
     if joined.height == 0:
         return {"city": city_name, "note": "no PT records matched a retained zone"}
 
-    agg = (
-        joined.group_by("zone_id")
-        .agg([
+    agg = joined.group_by("zone_id").agg(
+        [
             pl.len().alias("activity"),
             pl.col("arrival_delay").mean().alias("delay"),
             pl.col("arrival_delay").is_not_null().sum().alias("n_delay_obs"),
-        ])
+        ]
     )
     zone_df = zones.join(agg, on="zone_id", how="left").sort(["cx", "cy"])
     return {"city": city_name, "zones": zone_df}
@@ -212,23 +292,39 @@ PEAK_HOURS = {7, 8, 9, 15, 16, 17}
 
 
 def _peak_flag(df: pl.DataFrame) -> pl.DataFrame:
-    return df.with_columns([
-        pl.col("minute").dt.weekday().alias("_wd"),   # ISO: 1=Mon..7=Sun
-        pl.col("minute").dt.hour().alias("_hr"),
-    ]).with_columns([
-        ((pl.col("_wd") <= 5) & pl.col("_hr").is_in(list(PEAK_HOURS))).alias("is_peak")
-    ])
+    return df.with_columns(
+        [
+            pl.col("minute").dt.weekday().alias("_wd"),  # ISO: 1=Mon..7=Sun
+            pl.col("minute").dt.hour().alias("_hr"),
+        ]
+    ).with_columns(
+        [
+            ((pl.col("_wd") <= 5) & pl.col("_hr").is_in(list(PEAK_HOURS))).alias(
+                "is_peak"
+            )
+        ]
+    )
 
 
-def build_city_window_peak_ratio(city_name: str, city_cfg: dict, start, end,
-                                 stop_coords: pl.DataFrame | None = None) -> dict:
+def build_city_window_peak_ratio(
+    city_name: str, city_cfg: dict, start, end, stop_coords: pl.DataFrame | None = None
+) -> dict:
     if stop_coords is None:
         stop_coords = load_stop_coords()
 
-    zoned_stops = assign_grid_zones(stop_coords, city_name, city_cfg["lat_c"], city_cfg["lon_c"],
-                                    city_cfg["dlat"], city_cfg["dlon"])
+    zoned_stops = assign_grid_zones(
+        stop_coords,
+        city_name,
+        city_cfg["lat_c"],
+        city_cfg["lon_c"],
+        city_cfg["dlat"],
+        city_cfg["dlon"],
+    )
     if zoned_stops.height == 0:
-        return {"city": city_name, "note": "no grid cells cleared the min-stops threshold"}
+        return {
+            "city": city_name,
+            "note": "no grid cells cleared the min-stops threshold",
+        }
 
     zones = zone_summary(zoned_stops)
     stop_to_zone = zoned_stops.select(["stop_id", "zone_id"]).unique()
@@ -236,7 +332,10 @@ def build_city_window_peak_ratio(city_name: str, city_cfg: dict, start, end,
     dates = _dates_in_window(start, end)
     pt = load_stop_level_pt_for_operator(city_cfg["operator"], dates)
     if pt.height == 0:
-        return {"city": city_name, "note": "no stop-level PT data found for this window"}
+        return {
+            "city": city_name,
+            "note": "no stop-level PT data found for this window",
+        }
 
     joined = pt.join(stop_to_zone, on="stop_id", how="inner")
     if joined.height == 0:
@@ -247,12 +346,23 @@ def build_city_window_peak_ratio(city_name: str, city_cfg: dict, start, end,
 
     per_zone = (
         flagged.group_by("zone_id")
-        .agg([
-            pl.col("activity").filter(pl.col("is_peak")).mean().alias("mean_peak"),
-            pl.col("activity").filter(~pl.col("is_peak")).mean().alias("mean_offpeak"),
-            pl.col("activity").filter(pl.col("is_peak")).len().alias("n_peak_minutes"),
-            pl.col("activity").filter(~pl.col("is_peak")).len().alias("n_offpeak_minutes"),
-        ])
+        .agg(
+            [
+                pl.col("activity").filter(pl.col("is_peak")).mean().alias("mean_peak"),
+                pl.col("activity")
+                .filter(~pl.col("is_peak"))
+                .mean()
+                .alias("mean_offpeak"),
+                pl.col("activity")
+                .filter(pl.col("is_peak"))
+                .len()
+                .alias("n_peak_minutes"),
+                pl.col("activity")
+                .filter(~pl.col("is_peak"))
+                .len()
+                .alias("n_offpeak_minutes"),
+            ]
+        )
         .with_columns(
             pl.when(pl.col("mean_offpeak") > 0)
             .then(pl.col("mean_peak") / pl.col("mean_offpeak"))
@@ -273,8 +383,13 @@ def build_peak_ratio_report() -> dict:
         report[win] = {}
         for city_name, city_cfg in CITIES.items():
             print(f"  {city_name} ...")
-            res = build_city_window_peak_ratio(city_name, city_cfg, p["start_date"], p["end_date"],
-                                               stop_coords=stop_coords)
+            res = build_city_window_peak_ratio(
+                city_name,
+                city_cfg,
+                p["start_date"],
+                p["end_date"],
+                stop_coords=stop_coords,
+            )
             if "note" in res:
                 report[win][city_name] = {"note": res["note"]}
                 print(f"    {res['note']}")
@@ -282,8 +397,10 @@ def build_peak_ratio_report() -> dict:
             m = compute_morans(res["zones"], "ratio")
             report[win][city_name] = {"zone_df": res["zones"], "metrics": {"ratio": m}}
             if m is not None:
-                print(f"    ratio    n={m['n_zones']:3d} avg_neighbors={m['avg_neighbors']:.1f} "
-                     f"I={m['I']:+.3f} p={m['p_sim']:.3f}")
+                print(
+                    f"    ratio    n={m['n_zones']:3d} avg_neighbors={m['avg_neighbors']:.1f} "
+                    f"I={m['I']:+.3f} p={m['p_sim']:.3f}"
+                )
     return report
 
 
@@ -292,7 +409,10 @@ def build_peak_ratio_report() -> dict:
 # fallback for isolated cells (standard island treatment)
 # ─────────────────────────────────────────────────────────────────────────
 
-def build_queen_weights(zone_df: pl.DataFrame, n_fallback_neighbors: int = 2) -> dict[str, list[str]]:
+
+def build_queen_weights(
+    zone_df: pl.DataFrame, n_fallback_neighbors: int = 2
+) -> dict[str, list[str]]:
     ids = zone_df["zone_id"].to_list()
     cxy = dict(zip(ids, zip(zone_df["cx"].to_list(), zone_df["cy"].to_list())))
     cell_to_id = {v: k for k, v in cxy.items()}
@@ -310,14 +430,26 @@ def build_queen_weights(zone_df: pl.DataFrame, n_fallback_neighbors: int = 2) ->
                     neigh.append(other)
         neighbors[zid] = neigh
 
-    centroids = dict(zip(ids, zip(zone_df["centroid_lat"].to_list(), zone_df["centroid_lon"].to_list())))
+    centroids = dict(
+        zip(
+            ids,
+            zip(zone_df["centroid_lat"].to_list(), zone_df["centroid_lon"].to_list()),
+        )
+    )
     for zid in ids:
         if neighbors[zid]:
             continue
         lat0, lon0 = centroids[zid]
         dists = sorted(
-            ((other, (centroids[other][0] - lat0) ** 2 + (centroids[other][1] - lon0) ** 2)
-             for other in ids if other != zid),
+            (
+                (
+                    other,
+                    (centroids[other][0] - lat0) ** 2
+                    + (centroids[other][1] - lon0) ** 2,
+                )
+                for other in ids
+                if other != zid
+            ),
             key=lambda t: t[1],
         )
         fallback = [other for other, _ in dists[:n_fallback_neighbors]]
@@ -333,6 +465,7 @@ def build_queen_weights(zone_df: pl.DataFrame, n_fallback_neighbors: int = 2) ->
 # Global + Local Moran's I
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def compute_morans(zone_df: pl.DataFrame, metric: str, seed: int = 42) -> dict | None:
     from esda.moran import Moran, Moran_Local
     from libpysal.weights import W
@@ -346,7 +479,9 @@ def compute_morans(zone_df: pl.DataFrame, metric: str, seed: int = 42) -> dict |
     w.transform = "r"
 
     ids = d["zone_id"].to_list()
-    y = np.array([d.filter(pl.col("zone_id") == i)[metric][0] for i in ids], dtype=float)
+    y = np.array(
+        [d.filter(pl.col("zone_id") == i)[metric][0] for i in ids], dtype=float
+    )
     # reorder y to match w.id_order
     id_to_val = dict(zip(ids, y))
     y_ordered = np.array([id_to_val[i] for i in w.id_order], dtype=float)
@@ -381,6 +516,7 @@ def compute_morans(zone_df: pl.DataFrame, metric: str, seed: int = 42) -> dict |
 # Orchestration
 # ─────────────────────────────────────────────────────────────────────────
 
+
 def build_report() -> dict:
     stop_coords = load_stop_coords()
     report = {}
@@ -390,8 +526,13 @@ def build_report() -> dict:
         report[win] = {}
         for city_name, city_cfg in CITIES.items():
             print(f"  {city_name} ...")
-            res = build_city_window_zones(city_name, city_cfg, p["start_date"], p["end_date"],
-                                          stop_coords=stop_coords)
+            res = build_city_window_zones(
+                city_name,
+                city_cfg,
+                p["start_date"],
+                p["end_date"],
+                stop_coords=stop_coords,
+            )
             if "note" in res:
                 report[win][city_name] = {"note": res["note"]}
                 print(f"    {res['note']}")
@@ -402,8 +543,10 @@ def build_report() -> dict:
                 m = compute_morans(zone_df, metric)
                 city_result["metrics"][metric] = m
                 if m is not None:
-                    print(f"    {metric:8} n={m['n_zones']:3d} avg_neighbors={m['avg_neighbors']:.1f} "
-                         f"I={m['I']:+.3f} p={m['p_sim']:.3f}")
+                    print(
+                        f"    {metric:8} n={m['n_zones']:3d} avg_neighbors={m['avg_neighbors']:.1f} "
+                        f"I={m['I']:+.3f} p={m['p_sim']:.3f}"
+                    )
             report[win][city_name] = city_result
     return report
 
@@ -422,8 +565,10 @@ def print_global_table(report: dict) -> None:
                     print(f"{win:7} {city:13} {metric:9} insufficient data")
                     continue
                 pstr = "<0.001" if m["p_sim"] < 0.001 else f"{m['p_sim']:.3f}"
-                print(f"{win:7} {city:13} {metric:9} {m['n_zones']:8d} {m['avg_neighbors']:7.2f} "
-                     f"{m['I']:+8.3f} {pstr:>8}")
+                print(
+                    f"{win:7} {city:13} {metric:9} {m['n_zones']:8d} {m['avg_neighbors']:7.2f} "
+                    f"{m['I']:+8.3f} {pstr:>8}"
+                )
 
 
 def print_lisa_summary(report: dict) -> None:
@@ -440,22 +585,42 @@ def print_lisa_summary(report: dict) -> None:
                 counts = {"HH": 0, "LL": 0, "HL": 0, "LH": 0, "ns": 0}
                 for v in m["local"].values():
                     counts[v["cluster"]] += 1
-                print(f"{win:7} {city:13} {metric:9} {counts['HH']:4d} {counts['LL']:4d} "
-                     f"{counts['HL']:4d} {counts['LH']:4d} {counts['ns']:4d}")
+                print(
+                    f"{win:7} {city:13} {metric:9} {counts['HH']:4d} {counts['LL']:4d} "
+                    f"{counts['HL']:4d} {counts['LH']:4d} {counts['ns']:4d}"
+                )
 
 
 # ─────────────────────────────────────────────────────────────────────────
 # LISA cluster maps
 # ─────────────────────────────────────────────────────────────────────────
 
-LISA_COLORS = {"HH": "#d7301f", "LL": "#2166ac", "HL": "#fdbb84", "LH": "#92c5de", "ns": "#e0e0e0"}
-LISA_LABELS = {"HH": "High-High (hot spot)", "LL": "Low-Low (cold spot)",
-              "HL": "High-Low (outlier)", "LH": "Low-High (outlier)", "ns": "Not significant"}
+LISA_COLORS = {
+    "HH": "#d7301f",
+    "LL": "#2166ac",
+    "HL": "#fdbb84",
+    "LH": "#92c5de",
+    "ns": "#e0e0e0",
+}
+LISA_LABELS = {
+    "HH": "High-High (hot spot)",
+    "LL": "Low-Low (cold spot)",
+    "HL": "High-Low (outlier)",
+    "LH": "Low-High (outlier)",
+    "ns": "Not significant",
+}
 
 
-def _cell_bbox(cx: int, cy: int, city_cfg: dict, cell_km: float = CELL_KM) -> tuple[float, float, float, float]:
+def _cell_bbox(
+    cx: int, cy: int, city_cfg: dict, cell_km: float = CELL_KM
+) -> tuple[float, float, float, float]:
     """Returns (lat_lo, lat_hi, lon_lo, lon_hi) for grid cell (cx, cy)."""
-    lat_c, lon_c, dlat, dlon = city_cfg["lat_c"], city_cfg["lon_c"], city_cfg["dlat"], city_cfg["dlon"]
+    lat_c, lon_c, dlat, dlon = (
+        city_cfg["lat_c"],
+        city_cfg["lon_c"],
+        city_cfg["dlat"],
+        city_cfg["dlon"],
+    )
     lat_cell_deg = cell_km / 111.0
     lon_cell_deg = cell_km / (111.0 * math.cos(math.radians(lat_c)))
     lat_lo = (lat_c - dlat) + cx * lat_cell_deg
@@ -463,29 +628,52 @@ def _cell_bbox(cx: int, cy: int, city_cfg: dict, cell_km: float = CELL_KM) -> tu
     return lat_lo, lat_lo + lat_cell_deg, lon_lo, lon_lo + lon_cell_deg
 
 
-def _draw_lisa_city_panel(ax, zone_df: pl.DataFrame, local: dict, city_cfg: dict, city_name: str,
-                          basemap: bool = True, basemap_zoom: int = 12):
+def _draw_lisa_city_panel(
+    ax,
+    zone_df: pl.DataFrame,
+    local: dict,
+    city_cfg: dict,
+    city_name: str,
+    basemap: bool = True,
+    basemap_zoom: int = 12,
+):
     import matplotlib.patches as mpatches
 
-    lat_c, lon_c, dlat, dlon = city_cfg["lat_c"], city_cfg["lon_c"], city_cfg["dlat"], city_cfg["dlon"]
+    lat_c, lon_c, dlat, dlon = (
+        city_cfg["lat_c"],
+        city_cfg["lon_c"],
+        city_cfg["dlat"],
+        city_cfg["dlon"],
+    )
     lat_min, lat_max = lat_c - dlat, lat_c + dlat
     lon_min, lon_max = lon_c - dlon, lon_c + dlon
 
     if basemap:
         try:
-            img, extent = fetch_osm_basemap(lat_min, lat_max, lon_min, lon_max, zoom=basemap_zoom)
+            img, extent = fetch_osm_basemap(
+                lat_min, lat_max, lon_min, lon_max, zoom=basemap_zoom
+            )
             ax.imshow(img, extent=extent, zorder=0)
         except Exception as e:
-            print(f"Warning: basemap fetch failed for {city_name} ({e}); plotting without basemap.")
+            print(
+                f"Warning: basemap fetch failed for {city_name} ({e}); plotting without basemap."
+            )
             basemap = False
 
     for row in zone_df.iter_rows(named=True):
         zid = row["zone_id"]
         cluster = local.get(zid, {}).get("cluster", "ns") if local else "ns"
         lat_lo, lat_hi, lon_lo, lon_hi = _cell_bbox(row["cx"], row["cy"], city_cfg)
-        rect = mpatches.Rectangle((lon_lo, lat_lo), lon_hi - lon_lo, lat_hi - lat_lo,
-                                  facecolor=LISA_COLORS[cluster], alpha=0.8 if basemap else 0.9,
-                                  edgecolor="white", linewidth=0.3, zorder=2)
+        rect = mpatches.Rectangle(
+            (lon_lo, lat_lo),
+            lon_hi - lon_lo,
+            lat_hi - lat_lo,
+            facecolor=LISA_COLORS[cluster],
+            alpha=0.8 if basemap else 0.9,
+            edgecolor="white",
+            linewidth=0.3,
+            zorder=2,
+        )
         ax.add_patch(rect)
 
     ax.set_xlim(lon_min, lon_max)
@@ -498,8 +686,14 @@ def _draw_lisa_city_panel(ax, zone_df: pl.DataFrame, local: dict, city_cfg: dict
     ax.tick_params(labelsize=6)
 
 
-def fig_lisa_multi_city(report: dict, window: str, metric: str, save_path: str | None = None,
-                        basemap: bool = True, basemap_zoom: int = 12):
+def fig_lisa_multi_city(
+    report: dict,
+    window: str,
+    metric: str,
+    save_path: str | None = None,
+    basemap: bool = True,
+    basemap_zoom: int = 12,
+):
     """6-panel (2x3) LISA cluster map, one panel per city, for one window/metric."""
     import matplotlib.patches as mpatches
 
@@ -514,22 +708,54 @@ def fig_lisa_multi_city(report: dict, window: str, metric: str, save_path: str |
         ax = axes[i]
         res = win_res.get(city_name, {})
         if "note" in res or res.get("metrics", {}).get(metric) is None:
-            ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes
+            )
             ax.set_title(city_name, fontweight="bold", fontsize=10)
             continue
         zone_df = res["zone_df"]
         m = res["metrics"][metric]
-        _draw_lisa_city_panel(ax, zone_df, m["local"], CITIES[city_name], city_name,
-                              basemap=basemap, basemap_zoom=basemap_zoom)
-        ax.text(0.02, 0.02, f"I={m['I']:+.2f}, p={m['p_sim']:.3f}", transform=ax.transAxes,
-               fontsize=8, va="bottom", ha="left",
-               bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, linewidth=0.4))
+        _draw_lisa_city_panel(
+            ax,
+            zone_df,
+            m["local"],
+            CITIES[city_name],
+            city_name,
+            basemap=basemap,
+            basemap_zoom=basemap_zoom,
+        )
+        i_sign = "−" if m["I"] < 0 else "+"
+        i_str = f"{i_sign}{abs(m['I']):.2f}"
+        ax.text(
+            0.02,
+            0.02,
+            f"$I$={i_str}, $p$={m['p_sim']:.3f}",
+            transform=ax.transAxes,
+            fontsize=8,
+            va="bottom",
+            ha="left",
+            bbox=dict(
+                boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, linewidth=0.4
+            ),
+        )
 
-    legend_handles = [mpatches.Patch(facecolor=LISA_COLORS[k], edgecolor="white", label=LISA_LABELS[k])
-                      for k in ["HH", "LL", "HL", "LH", "ns"]]
-    fig.legend(handles=legend_handles, loc="lower center", ncol=5, fontsize=9, frameon=True,
-              bbox_to_anchor=(0.5, -0.02))
-    fig.suptitle(f"LISA cluster map: {metric_label} — {window}", fontweight="bold", fontsize=13)
+    legend_handles = [
+        mpatches.Patch(
+            facecolor=LISA_COLORS[k], edgecolor="white", label=LISA_LABELS[k]
+        )
+        for k in ["HH", "LL", "HL", "LH", "ns"]
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        ncol=5,
+        fontsize=9,
+        frameon=True,
+        bbox_to_anchor=(0.5, -0.02),
+    )
+    fig.suptitle(
+        f"LISA cluster map: {metric_label} for {window}", fontweight="bold", fontsize=13
+    )
     fig.tight_layout(rect=[0, 0.03, 1, 0.97])
     if save_path:
         fig.savefig(save_path, bbox_inches="tight", dpi=200)
@@ -547,7 +773,9 @@ if __name__ == "__main__":
     print("\n=== LISA cluster-type counts (per zone classification) ===")
     print_lisa_summary(rep)
 
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "multi_city_output")
+    out_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "multi_city_output"
+    )
     os.makedirs(out_dir, exist_ok=True)
     cache_path = os.path.join(out_dir, "report_cache.pkl")
     with open(cache_path, "wb") as f:
