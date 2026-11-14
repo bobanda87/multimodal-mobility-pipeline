@@ -36,5 +36,7 @@ much for one Lambda run (tens of thousands of small Avinor files); do that catch
 old tracking file does not list (about half of all raw files here: days outside the study windows);
 they are skipped from then on.
 
-`ReservedConcurrentExecutions: 1` keeps two runs from overlapping; it needs an account concurrency
-limit above the 10 AWS always keeps unreserved.
+Runs must not overlap (two overlapping runs would normalize the same raw files twice). Reserved
+concurrency would enforce that, but it needs an account concurrency limit above the 10 AWS keeps
+unreserved, which this account does not have. Instead `NormalizeFunction` times out after 14 minutes,
+shorter than the default 15 minute schedule; keep the timeout below `NormalizeSchedule` if you change it.

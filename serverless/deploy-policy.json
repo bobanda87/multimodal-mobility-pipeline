@@ -79,12 +79,15 @@
         "ecr:BatchCheckLayerAvailability",
         "ecr:BatchGetImage",
         "ecr:CompleteLayerUpload",
+        "ecr:CreateRepository",
         "ecr:DescribeImages",
         "ecr:DescribeRepositories",
         "ecr:GetDownloadUrlForLayer",
+        "ecr:GetRepositoryPolicy",
         "ecr:InitiateLayerUpload",
         "ecr:ListImages",
         "ecr:PutImage",
+        "ecr:SetRepositoryPolicy",
         "ecr:UploadLayerPart"
       ],
       "Resource": "arn:aws:ecr:eu-north-1:173471018037:repository/phd-*"

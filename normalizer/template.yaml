@@ -44,10 +44,11 @@ Resources:
       PackageType: Image
       ImageConfig:
         Command: ["normalizer.handler.normalize_handler"]
-      Timeout: 900
+      # Shorter than the default 15 min schedule so a run never overlaps the next one (two overlapping
+      # runs would normalize the same raw files twice). Reserved concurrency would enforce this, but the
+      # account's concurrency limit of 10 leaves no room to reserve any.
+      Timeout: 840
       MemorySize: 3008
-      # One run at a time: two overlapping runs would normalize the same raw files twice
-      ReservedConcurrentExecutions: 1
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref BucketName
@@ -68,8 +69,7 @@ Resources:
       ImageConfig:
         Command: ["normalizer.handler.compact_handler"]
       Timeout: 900
-      MemorySize: 6144
-      ReservedConcurrentExecutions: 1
+      MemorySize: 3008  # the account's default per-function maximum; raise it (and this) via a Lambda quota request
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref BucketName
