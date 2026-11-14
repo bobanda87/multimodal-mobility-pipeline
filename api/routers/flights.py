@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, Query
 
 from .. import db, files as s3_files
-from ..deps import Bucket, TimeRange
+from ..deps import retry_once_on_missing_file, Bucket, TimeRange
 
 router = APIRouter(prefix="/flights", tags=["aviation"])
 
 
 @router.get("/delays")
+@retry_once_on_missing_file
 def delays(
     rng: TimeRange = Depends(),
     bucket: Bucket = "day",

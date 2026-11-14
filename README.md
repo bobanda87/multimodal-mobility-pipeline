@@ -202,3 +202,9 @@ To reproduce the analysis from the archived data:
    ```
 
 > All results are deterministic given the same normalized Parquet files. Random seeds are not used; analysis is fully aggregation-based.
+
+## Real-time pipeline
+
+The data collected since November 2026 (near real-time collectors, incremental normalization, the API, the data
+monitor) is deployed from separate AWS SAM stacks. Start with [DEPLOYMENT.md](DEPLOYMENT.md); the code that produced
+the earlier static study is the git tag `static-study-v1`.

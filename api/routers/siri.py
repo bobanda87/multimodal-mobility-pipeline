@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .. import db, files as s3_files
-from ..deps import Bucket, TimeRange
+from ..deps import retry_once_on_missing_file, Bucket, TimeRange
 
 router = APIRouter(prefix="/siri", tags=["public transport (SIRI ET, all operators)"])
 
@@ -15,6 +15,7 @@ def _now() -> datetime:
 
 
 @router.get("/journeys/latest")
+@retry_once_on_missing_file
 def latest_journeys(
     minutes: int = Query(60, ge=1, le=360, description="Journeys that changed within this many minutes"),
     datasource: str | None = Query(None, description="Operator, e.g. RUT"),
@@ -56,6 +57,7 @@ def latest_journeys(
 
 
 @router.get("/journeys/{trip_id:path}/stops")
+@retry_once_on_missing_file
 def journey_stops(
     trip_id: str,
     hours: int = Query(24, ge=1, le=48, description="How far back to look for passes"),
@@ -95,6 +97,7 @@ def journey_stops(
 
 
 @router.get("/delays")
+@retry_once_on_missing_file
 def delays(
     rng: TimeRange = Depends(),
     bucket: Bucket = "hour",
