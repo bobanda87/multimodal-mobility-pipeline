@@ -17,6 +17,182 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 
+def _pearson_corr(df: pl.DataFrame, col_x: str, col_y: str) -> float | None:
+    """Pearson r when there are at least two rows and the result is finite."""
+    if df.height < 2:
+        return None
+    c = df.select(pl.corr(col_x, col_y))[0, 0]
+    return float(c) if c is not None and c == c else None
+
+
+def _zonal_multimodal_timeseries(
+    weather_by_zone: pl.DataFrame,
+    bysykkel_by_zone: pl.DataFrame,
+    combined: pl.DataFrame,
+) -> tuple[pl.DataFrame | None, dict[str, dict[str, float | None]]]:
+    """
+    Po zoni: road temp (Vegvesen u zoni) + suma bajkova u zoni + PT i avio isti kao gradski (min–max skala).
+    Indeks = _sb + _spt + _sf (bikes skalirano po zoni kroz vreme; PT/avio globalno kao u combined multimodal).
+    """
+    if weather_by_zone is None or weather_by_zone.height == 0:
+        return None, {}
+    if bysykkel_by_zone is None or bysykkel_by_zone.height == 0:
+        return None, {}
+    wz = weather_by_zone.join(
+        bysykkel_by_zone, on=["minute", "zone"], how="left"
+    )
+    join_cols = ["minute"]
+    for c in ("public_transport_activity", "flight_activity"):
+        if c in combined.columns:
+            join_cols.append(c)
+    if len(join_cols) > 1:
+        wz = wz.join(
+            combined.select(join_cols).unique(subset=["minute"], keep="last"),
+            on="minute",
+            how="left",
+        )
+
+    def _bounds(col: str) -> tuple[float, float] | None:
+        if col not in combined.columns:
+            return None
+        lo = combined.select(pl.col(col).fill_null(0).min())[0, 0]
+        hi = combined.select(pl.col(col).fill_null(0).max())[0, 0]
+        if lo is None or hi is None or lo != lo or hi != hi:
+            return None
+        return float(lo), float(hi)
+
+    pt_b = _bounds("public_transport_activity")
+    fl_b = _bounds("flight_activity")
+
+    wz = wz.with_columns(pl.col("bikes_in_zone").fill_null(0).alias("_b"))
+    wz = wz.with_columns(
+        [
+            pl.col("_b").min().over("zone").alias("_bmin"),
+            pl.col("_b").max().over("zone").alias("_bmax"),
+        ]
+    )
+    wz = wz.with_columns(
+        pl.when(pl.col("_bmax") > pl.col("_bmin"))
+        .then((pl.col("_b") - pl.col("_bmin")) / (pl.col("_bmax") - pl.col("_bmin")))
+        .otherwise(pl.lit(0.0))
+        .alias("_sb")
+    )
+
+    if pt_b and pt_b[1] > pt_b[0]:
+        lo, hi = pt_b
+        wz = wz.with_columns(
+            (
+                (pl.col("public_transport_activity").fill_null(0) - lo)
+                / (hi - lo)
+            ).alias("_spt")
+        )
+    else:
+        wz = wz.with_columns(pl.lit(0.0).alias("_spt"))
+
+    if fl_b and fl_b[1] > fl_b[0]:
+        lo, hi = fl_b
+        wz = wz.with_columns(
+            (
+                (pl.col("flight_activity").fill_null(0) - lo)
+                / (hi - lo)
+            ).alias("_sf")
+        )
+    else:
+        wz = wz.with_columns(pl.lit(0.0).alias("_sf"))
+
+    wz = wz.with_columns(
+        (pl.col("_sb") + pl.col("_spt") + pl.col("_sf")).alias(
+            "multimodal_activity_zonal"
+        )
+    )
+    drop_tmp = ["_b", "_bmin", "_bmax", "_sb", "_spt", "_sf"]
+    wz = wz.drop([c for c in drop_tmp if c in wz.columns])
+
+    cz_mm: dict[str, dict[str, float | None]] = {}
+    for z in wz["zone"].drop_nulls().unique().to_list():
+        sub = wz.filter(pl.col("zone") == z)
+        r = _pearson_corr(sub, "road_temperature", "multimodal_activity_zonal")
+        cz_mm[str(z)] = {"temp_vs_multimodal_zonal": r}
+    return wz, cz_mm
+
+
+# Peak commuting: weekday (Mon–Fri) UTC hours 07:00–09:59 and 15:00–17:59; all other minutes = off-peak.
+# `minute` is UTC; Polars `dt.hour()` on UTC timestamps matches these intervals.
+PEAK_OFFPEAK_DEFINITION = (
+    "UTC; Mon–Fri (weekday); peak = 07:00–09:59 and 15:00–17:59; "
+    "off-peak = all other minutes in the sample."
+)
+
+
+def _commute_peak_mask_expr() -> pl.Expr:
+    m = pl.col("minute")
+    wd = m.dt.weekday()
+    h = m.dt.hour()
+    morning = (h >= 7) & (h < 10)
+    afternoon = (h >= 15) & (h < 18)
+    return ((wd <= 5) & (morning | afternoon)).alias("_is_commute_peak")
+
+
+def correlations_by_commute_peak(combined: pl.DataFrame) -> dict | None:
+    """
+    Pearson r(road_temperature, indicator) separately for commute-peak vs off-peak minutes.
+    Peak: weekday UTC 07:00–09:59 and 15:00–17:59. Indicators: bikes, PT activity, mean_delay_sec.
+    """
+    if combined.height == 0 or "minute" not in combined.columns:
+        return None
+    if "road_temperature" not in combined.columns:
+        return None
+    try:
+        tagged = combined.with_columns(_commute_peak_mask_expr())
+    except Exception:
+        return None
+
+    bikes_col = "bikes_in_use" if "bikes_in_use" in tagged.columns else (
+        "bikes_available" if "bikes_available" in tagged.columns else None
+    )
+
+    def _segment(tag: pl.DataFrame, peak: bool) -> dict:
+        seg = tag.filter(pl.col("_is_commute_peak") == peak).drop("_is_commute_peak")
+        out: dict = {"n_minutes": seg.height}
+        if bikes_col:
+            d = seg.filter(
+                pl.col("road_temperature").is_not_null() & pl.col(bikes_col).is_not_null()
+            )
+            out["n_temp_bikes"] = d.height
+            out["pearson_temp_vs_bikes"] = _pearson_corr(d, "road_temperature", bikes_col)
+        else:
+            out["n_temp_bikes"] = 0
+            out["pearson_temp_vs_bikes"] = None
+        if "public_transport_activity" in seg.columns:
+            d = seg.filter(
+                pl.col("road_temperature").is_not_null()
+                & pl.col("public_transport_activity").is_not_null()
+            )
+            out["n_temp_pt"] = d.height
+            out["pearson_temp_vs_public_transport"] = _pearson_corr(
+                d, "road_temperature", "public_transport_activity"
+            )
+        else:
+            out["n_temp_pt"] = 0
+            out["pearson_temp_vs_public_transport"] = None
+        if "mean_delay_sec" in seg.columns:
+            d = seg.filter(
+                pl.col("road_temperature").is_not_null() & pl.col("mean_delay_sec").is_not_null()
+            )
+            out["n_temp_delay"] = d.height
+            out["pearson_temp_vs_delay"] = _pearson_corr(d, "road_temperature", "mean_delay_sec")
+        else:
+            out["n_temp_delay"] = 0
+            out["pearson_temp_vs_delay"] = None
+        return out
+
+    return {
+        "definition": PEAK_OFFPEAK_DEFINITION,
+        "peak": _segment(tagged, True),
+        "offpeak": _segment(tagged, False),
+    }
+
+
 def analyze_weather_impact(
     normalized_dir: str = "normalized_data",
     city_bbox: dict | None = None,
@@ -342,6 +518,19 @@ def analyze_weather_impact(
     except Exception:
         location_to_zone = None
 
+    station_to_zone_df = None
+    try:
+        from analysis.bysykkel_zones import load_station_to_zone
+
+        station_to_zone_df = load_station_to_zone(read_from_s3=read_from_s3)
+        if station_to_zone_df is not None:
+            print(
+                f"Bysykkel station→zone: {station_to_zone_df.height} stations inside a city zone"
+            )
+    except Exception as e:
+        print(f"Warning: Bysykkel station→zone not loaded: {e}")
+        station_to_zone_df = None
+
     # Weather data from vegvesen: temperature + precipitation, wind, humidity (weather + location)
     # Prefer road_temperature; fallback to metric_value. Apply range -50..50 °C for temp.
     weather = None
@@ -455,6 +644,7 @@ def analyze_weather_impact(
     # metric_value now represents bikes_in_use (total_capacity - bikes_available)
     # Higher temperature -> more bike usage -> more bikes in use (positive correlation expected)
     bysykkel = None
+    bysykkel_by_zone = None
     if "oslobysykkel" in combined_by_source:
         oslobysykkel_df = combined_by_source["oslobysykkel"]
         print(f"Oslo Bysykkel raw data: {oslobysykkel_df.height} records")
@@ -479,6 +669,28 @@ def analyze_weather_impact(
         if bysykkel.height > 0:
             print(
                 f"Bysykkel minute range: {bysykkel.select([pl.col('minute').min().alias('min_minute'), pl.col('minute').max().alias('max_minute')])}")
+
+        if station_to_zone_df is not None and "location" in oslobysykkel_df.columns:
+            ozj = oslobysykkel_df.join(station_to_zone_df, on="location", how="inner")
+            if ozj.filter(pl.col("zone").is_not_null()).height > 0:
+                bysykkel_by_zone = (
+                    ozj.with_columns([
+                        pl.col("timestamp")
+                        .dt.replace_time_zone("UTC")
+                        .dt.truncate("1m")
+                        .alias("minute"),
+                        pl.col("metric_value")
+                        .cast(pl.Float64, strict=False)
+                        .alias("bikes_in_use"),
+                    ])
+                    .filter(pl.col("bikes_in_use").is_not_null())
+                    .group_by(["minute", "zone"])
+                    .agg(pl.col("bikes_in_use").sum().alias("bikes_in_zone"))
+                )
+                print(
+                    f"  Bysykkel by zone: {bysykkel_by_zone.height} (minute, zone) rows; "
+                    f"zones {bysykkel_by_zone['zone'].unique().to_list()}"
+                )
 
     # Avinor: flight activity
     avinor = None
@@ -679,6 +891,37 @@ def analyze_weather_impact(
         )
         if combined.height > 0:
             print(f"  Part of day {hour_start:02d}-{hour_end:02d} (UTC): {combined.height} minutes")
+        keep_minutes = combined.select("minute").unique()
+        if weather_by_zone is not None and keep_minutes.height > 0:
+            weather_by_zone = weather_by_zone.join(
+                keep_minutes, on="minute", how="inner"
+            )
+        if bysykkel_by_zone is not None and keep_minutes.height > 0:
+            bysykkel_by_zone = bysykkel_by_zone.join(
+                keep_minutes, on="minute", how="inner"
+            )
+
+    zonal_multimodal_df = None
+    correlations_by_zone_zonal_mm: dict[str, dict[str, float | None]] = {}
+    if weather_by_zone is not None and bysykkel_by_zone is not None:
+        zonal_multimodal_df, correlations_by_zone_zonal_mm = _zonal_multimodal_timeseries(
+            weather_by_zone, bysykkel_by_zone, combined
+        )
+        if zonal_multimodal_df is not None and zonal_multimodal_df.height > 0:
+            print(
+                "Zonal multimodal (bikes by station zone + global PT/flight scaling): "
+                f"{zonal_multimodal_df.height} rows; r(temp, MM_zonal) by zone = "
+                f"{correlations_by_zone_zonal_mm}"
+            )
+
+    correlations_peak_offpeak = correlations_by_commute_peak(combined)
+    if correlations_peak_offpeak:
+        npk = correlations_peak_offpeak["peak"]["n_minutes"]
+        nop = correlations_peak_offpeak["offpeak"]["n_minutes"]
+        print(
+            f"  Peak×weather segments (weekday UTC 07:00–09:59, 15:00–17:59): "
+            f"peak {npk:,} min, off-peak {nop:,} min"
+        )
 
     # Calculate correlations - only use rows where both values exist
     # Bysykkel join adds column "bikes_in_use" (not "bikes_available")
@@ -777,10 +1020,44 @@ def analyze_weather_impact(
                     corr_delay if corr_delay is not None and (
                         corr_delay == corr_delay) else None
                 )
+                # Robustness: heavy-tail delay minutes; same rows as raw r
+                p1 = delay_data.select(
+                    pl.col("mean_delay_sec").quantile(0.01)
+                ).item()
+                p99 = delay_data.select(
+                    pl.col("mean_delay_sec").quantile(0.99)
+                ).item()
+                if (
+                    p1 is not None
+                    and p99 is not None
+                    and p1 == p1
+                    and p99 == p99
+                    and float(p1) <= float(p99)
+                ):
+                    delay_w = delay_data.with_columns(
+                        pl.col("mean_delay_sec")
+                        .clip(float(p1), float(p99))
+                        .alias("_mean_delay_winsor")
+                    )
+                    correlations["temperature_vs_delay_winsor_1_99"] = _pearson_corr(
+                        delay_w, "road_temperature", "_mean_delay_winsor"
+                    )
+                else:
+                    correlations["temperature_vs_delay_winsor_1_99"] = None
+                delay_log = delay_data.with_columns(
+                    pl.col("mean_delay_sec").log1p().alias("_log_delay")
+                )
+                correlations["temperature_vs_delay_log1p"] = _pearson_corr(
+                    delay_log, "road_temperature", "_log_delay"
+                )
             else:
                 correlations["temperature_vs_delay"] = None
+                correlations["temperature_vs_delay_winsor_1_99"] = None
+                correlations["temperature_vs_delay_log1p"] = None
         else:
             correlations["temperature_vs_delay"] = None
+            correlations["temperature_vs_delay_winsor_1_99"] = None
+            correlations["temperature_vs_delay_log1p"] = None
 
         if "mean_travel_time_sec" in combined.columns:
             d = combined.filter(pl.col("road_temperature").is_not_null() & pl.col("mean_travel_time_sec").is_not_null())
@@ -848,6 +1125,8 @@ def analyze_weather_impact(
             "temperature_vs_flight_activity": None,
             "temperature_vs_multimodal": None,
             "temperature_vs_delay": None,
+            "temperature_vs_delay_winsor_1_99": None,
+            "temperature_vs_delay_log1p": None,
             "temperature_vs_travel_time": None,
             "temperature_vs_traffic_incidents": None,
         }
@@ -932,6 +1211,29 @@ def analyze_weather_impact(
                 if d.height > 1:
                     c = d.select(pl.corr("temp_zone", "mean_delay_sec"))[0, 0]
                     cz["temp_vs_delay"] = float(c) if c is not None and c == c else None
+            if "public_transport_activity" in merged.columns:
+                d = merged.filter(
+                    pl.col("temp_zone").is_not_null()
+                    & pl.col("public_transport_activity").is_not_null()
+                )
+                if d.height > 1:
+                    c = d.select(pl.corr("temp_zone", "public_transport_activity"))[0, 0]
+                    cz["temp_vs_public_transport"] = (
+                        float(c) if c is not None and c == c else None
+                    )
+            if "multimodal_activity" in merged.columns:
+                d = merged.filter(
+                    pl.col("temp_zone").is_not_null()
+                    & pl.col("multimodal_activity").is_not_null()
+                )
+                if d.height > 1:
+                    c = d.select(pl.corr("temp_zone", "multimodal_activity"))[0, 0]
+                    cz["temp_vs_multimodal_global"] = (
+                        float(c) if c is not None and c == c else None
+                    )
+            mmz = correlations_by_zone_zonal_mm.get(str(z))
+            if mmz and mmz.get("temp_vs_multimodal_zonal") is not None:
+                cz["temp_vs_multimodal_zonal"] = mmz["temp_vs_multimodal_zonal"]
             if cz:
                 correlations_by_zone[str(z)] = cz
 
@@ -973,7 +1275,9 @@ def analyze_weather_impact(
     # Delay data note: Entur SIRI ET provides arrival_delay/departure_delay and departure time.
     delay_note = (
         "Delay data: Entur SIRI ET (Estimated Timetable) provides arrival_delay/departure_delay. "
-        "Analysis uses normalized entur_siri_et, aggregated by minute, with temperature_vs_delay correlation."
+        "Analysis uses normalized entur_siri_et, aggregated by minute, with temperature_vs_delay correlation. "
+        "Robustness: same-minute sample also reports r after winsorizing mean_delay_sec at the 1st–99th "
+        "percentile and r using log(1+mean_delay_sec) to limit leverage of extreme delay spikes."
     )
 
     # Calculate actual date range from filtered data
@@ -1001,6 +1305,7 @@ def analyze_weather_impact(
 
     return {
         "correlations": correlations,
+        "correlations_peak_offpeak": correlations_peak_offpeak,
         "interpretation": interpretation,
         "sample_size_minutes": combined.height,
         "date_range": date_range,
@@ -1014,6 +1319,8 @@ def analyze_weather_impact(
         },
         "weather_by_zone": weather_by_zone,
         "correlations_by_zone": correlations_by_zone,
+        "correlations_by_zone_zonal_mm": correlations_by_zone_zonal_mm,
+        "zonal_multimodal_df": zonal_multimodal_df,
         "regression_delay": regression_result,
         "combined_df": combined,
     }
@@ -1302,6 +1609,145 @@ def save_weather_impact_plots(results: dict, output_dir: Optional[str] = None) -
         ax.set_title("Correlation matrix")
         fig.savefig(os.path.join(out, "correlation_heatmap.png"), dpi=100, bbox_inches="tight")
         plt.close(fig)
+
+    if "multimodal_activity" in df.columns and "road_temperature" in df.columns:
+        sub = df[["road_temperature", "multimodal_activity"]].dropna()
+        if len(sub) > 10:
+            fig, ax = plt.subplots()
+            ax.scatter(
+                sub["road_temperature"], sub["multimodal_activity"], alpha=0.3, s=5
+            )
+            ax.set_xlabel("Road temperature (°C)")
+            ax.set_ylabel("Multimodal activity index (global)")
+            ax.set_title("Temperature vs multimodal index (citywide)")
+            fig.savefig(
+                os.path.join(out, "scatter_temp_vs_multimodal_global.png"),
+                dpi=100,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+
+    corr_by_z = results.get("correlations_by_zone") or {}
+    if corr_by_z:
+        import numpy as np
+
+        zones = sorted(corr_by_z.keys())
+        metric_keys = [
+            "temp_vs_bysykkel",
+            "temp_vs_delay",
+            "temp_vs_public_transport",
+            "temp_vs_multimodal_global",
+            "temp_vs_multimodal_zonal",
+        ]
+        labels = ["Bikes", "Delay", "PT", "MM global", "MM zonal"]
+        active = [
+            (k, lab)
+            for k, lab in zip(metric_keys, labels)
+            if any(corr_by_z[z].get(k) is not None for z in zones)
+        ]
+        if active:
+            x = np.arange(len(zones))
+            w = 0.8 / max(len(active), 1)
+            fig, ax = plt.subplots(figsize=(max(6, 1.2 * len(zones)), 5))
+            for i, (key, lab) in enumerate(active):
+                vals = [corr_by_z[z].get(key) for z in zones]
+                heights = [float(v) if v is not None and v == v else 0.0 for v in vals]
+                ax.bar(
+                    x + (i - (len(active) - 1) / 2) * w,
+                    heights,
+                    width=w * 0.95,
+                    label=lab,
+                )
+            ax.axhline(0, color="k", linewidth=0.5)
+            ax.set_xticks(x)
+            ax.set_xticklabels(zones)
+            ax.set_ylabel("Pearson r")
+            ax.set_title("By zone: temp in zone vs mobility (see legend)")
+            ax.legend(loc="best", fontsize=8)
+            fig.savefig(
+                os.path.join(out, "bar_pearson_by_zone_incl_multimodal.png"),
+                dpi=120,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+
+    combined_pl = results.get("combined_df")
+    wby = results.get("weather_by_zone")
+    if (
+        wby is not None
+        and wby.height > 0
+        and combined_pl is not None
+        and "multimodal_activity" in combined_pl.columns
+    ):
+        scat = wby.join(
+            combined_pl.select(["minute", "multimodal_activity"]),
+            on="minute",
+            how="inner",
+        )
+        if scat.height > 10:
+            sp = scat.to_pandas()
+            zones_u = sorted(sp["zone"].dropna().unique().tolist())
+            if zones_u:
+                n = len(zones_u)
+                fig, axes = plt.subplots(1, n, figsize=(4 * n, 4), squeeze=False)
+                for i, z in enumerate(zones_u):
+                    ax = axes[0, i]
+                    part = sp[sp["zone"] == z][
+                        ["road_temperature", "multimodal_activity"]
+                    ].dropna()
+                    if len(part) > 5:
+                        ax.scatter(
+                            part["road_temperature"],
+                            part["multimodal_activity"],
+                            alpha=0.35,
+                            s=6,
+                        )
+                    ax.set_title(f"Zone {z}")
+                    ax.set_xlabel("Temp in zone (°C)")
+                    ax.set_ylabel("MM index (global)")
+                fig.suptitle("Zonal road temp vs citywide multimodal index")
+                fig.tight_layout()
+                fig.savefig(
+                    os.path.join(out, "scatter_temp_zone_vs_multimodal_global_facets.png"),
+                    dpi=120,
+                    bbox_inches="tight",
+                )
+                plt.close(fig)
+
+    zmdf = results.get("zonal_multimodal_df")
+    if zmdf is not None and zmdf.height > 10:
+        zp = zmdf.to_pandas()
+        if "multimodal_activity_zonal" in zp.columns:
+            zones_u = sorted(zp["zone"].dropna().unique().tolist())
+            if zones_u:
+                n = len(zones_u)
+                fig, axes = plt.subplots(1, n, figsize=(4 * n, 4), squeeze=False)
+                for i, z in enumerate(zones_u):
+                    ax = axes[0, i]
+                    part = zp[zp["zone"] == z][
+                        ["road_temperature", "multimodal_activity_zonal"]
+                    ].dropna()
+                    if len(part) > 5:
+                        ax.scatter(
+                            part["road_temperature"],
+                            part["multimodal_activity_zonal"],
+                            alpha=0.35,
+                            s=6,
+                        )
+                    ax.set_title(f"Zone {z}")
+                    ax.set_xlabel("Temp in zone (°C)")
+                    ax.set_ylabel("MM index (zonal)")
+                fig.suptitle(
+                    "Zonal temp vs zonal multimodal (bikes in zone + global PT/flight)"
+                )
+                fig.tight_layout()
+                fig.savefig(
+                    os.path.join(out, "scatter_temp_vs_multimodal_zonal_facets.png"),
+                    dpi=120,
+                    bbox_inches="tight",
+                )
+                plt.close(fig)
+
     print(f"Plots saved to {out}")
 
 
@@ -1315,8 +1761,18 @@ def print_comparison_table(comparison_results: dict) -> None:
         "temperature_vs_flight_activity",
         "temperature_vs_multimodal",
         "temperature_vs_delay",
+        "temperature_vs_delay_winsor_1_99",
+        "temperature_vs_delay_log1p",
     ]
-    short_labels = ["Bysykkel", "PT", "Flight", "Multimodal", "Delay"]
+    short_labels = [
+        "Bysykkel",
+        "PT",
+        "Flight",
+        "Multimodal",
+        "Delay",
+        "Delay W1–99",
+        "Delay log1p",
+    ]
     period_names = list(comparison_results.keys())
     valid_periods = [p for p in period_names if isinstance(
         comparison_results[p], dict) and "correlations" in comparison_results[p]]
@@ -1389,6 +1845,8 @@ def _append_summary_csv(
         "temperature_vs_flight_activity": corr.get("temperature_vs_flight_activity"),
         "temperature_vs_multimodal": corr.get("temperature_vs_multimodal"),
         "temperature_vs_delay": corr.get("temperature_vs_delay"),
+        "temperature_vs_delay_winsor_1_99": corr.get("temperature_vs_delay_winsor_1_99"),
+        "temperature_vs_delay_log1p": corr.get("temperature_vs_delay_log1p"),
         "temperature_vs_travel_time": corr.get("temperature_vs_travel_time"),
         "temperature_vs_traffic_incidents": corr.get("temperature_vs_traffic_incidents"),
         "sample_size_minutes": results.get("sample_size_minutes"),
@@ -1487,6 +1945,19 @@ if __name__ == "__main__":
             print("\nData summary:")
             for key, value in results["data_summary"].items():
                 print(f"  {key}: {value}")
+            cpo = results.get("correlations_peak_offpeak")
+            if cpo:
+                print("\nPearson r by commute peak vs off-peak (temp vs bikes / PT / delay), UTC weekday windows:")
+                print(f"  Definition: {cpo.get('definition', '')}")
+                for seg in ("peak", "offpeak"):
+                    s = cpo[seg]
+                    print(
+                        f"  {seg}: bikes r={s.get('pearson_temp_vs_bikes')}, "
+                        f"PT r={s.get('pearson_temp_vs_public_transport')}, "
+                        f"delay r={s.get('pearson_temp_vs_delay')} "
+                        f"(n min={s.get('n_minutes')}, n temp+bikes={s.get('n_temp_bikes')}, "
+                        f"n temp+PT={s.get('n_temp_pt')})"
+                    )
             print("\nCorrelations:")
             _skip_prefixes = ("precipitation_vs_", "wind_speed_vs_", "relative_humidity_vs_")
             for key, value in results["correlations"].items():
@@ -1495,7 +1966,10 @@ if __name__ == "__main__":
                 print(
                     f"  {key}: {value:.3f}" if value is not None else f"  {key}: N/A")
             if results.get("correlations_by_zone"):
-                print("\nCorrelations by zone (temp in zone vs global bikes/delay):")
+                print(
+                    "\nCorrelations by zone (temp in zone vs global bikes/PT/delay/MM; "
+                    "MM zonal = bikes in zone + global PT/flight scaling):"
+                )
                 for zone, cz in results["correlations_by_zone"].items():
                     print(f"  {zone}: {cz}")
             if results.get("regression_delay"):

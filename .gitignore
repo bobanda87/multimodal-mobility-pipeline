@@ -219,3 +219,7 @@ vegvesen/vegvesen_log.txt
 oslobysykkel/oslobysykkel_log.txt
 
 normalized_data/
+
+# Local analysis artifacts (large / generated)
+analysis/output/
+analysis/reference/_gtfs_norway_tmp.zip

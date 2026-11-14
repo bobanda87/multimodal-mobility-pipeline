@@ -1,0 +1,45 @@
+{
+  "description": "Oslo zone definitions (bounding boxes) for tagging Vegvesen weather stations by part of city. Order matters: first matching zone is assigned.",
+  "zones": [
+    {
+      "id": "sentrum",
+      "name": "Sentrum",
+      "lat_min": 59.91,
+      "lat_max": 59.93,
+      "lon_min": 10.72,
+      "lon_max": 10.78
+    },
+    {
+      "id": "nord",
+      "name": "Nord",
+      "lat_min": 59.93,
+      "lat_max": 60.0,
+      "lon_min": 10.59,
+      "lon_max": 10.92
+    },
+    {
+      "id": "sør",
+      "name": "Sør",
+      "lat_min": 59.86,
+      "lat_max": 59.91,
+      "lon_min": 10.59,
+      "lon_max": 10.92
+    },
+    {
+      "id": "vest",
+      "name": "Vest",
+      "lat_min": 59.91,
+      "lat_max": 59.93,
+      "lon_min": 10.59,
+      "lon_max": 10.72
+    },
+    {
+      "id": "øst",
+      "name": "Øst",
+      "lat_min": 59.91,
+      "lat_max": 59.93,
+      "lon_min": 10.78,
+      "lon_max": 10.92
+    }
+  ]
+}
