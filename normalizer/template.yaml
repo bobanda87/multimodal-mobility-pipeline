@@ -15,8 +15,8 @@ Parameters:
     Description: Where normalization_watermark.json lives
   NormalizeEveryMinutes:
     Type: Number
-    Default: 5
-    MinValue: 2
+    Default: 1
+    MinValue: 1
     Description: How often new raw files are normalized, in minutes; this is the extra delay before they reach the API
   # Schedules are created DISABLED; check a manual invocation first, then deploy with ENABLED.
   ScheduleState:
@@ -29,6 +29,14 @@ Parameters:
     Default: DISABLED
     AllowedValues: [ENABLED, DISABLED]
     Description: State of the daily compaction schedule, kept separate so it stays off until you want it
+  HourlyCompactScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+    Description: State of the hourly compaction schedule (runs at minute 10 and merges the previous closed hour)
+
+Conditions:
+  SingularMinute: !Equals [!Ref NormalizeEveryMinutes, 1]  # rate() wants 'minute' for 1 and 'minutes' otherwise
 
 Globals:
   Function:
@@ -62,7 +70,7 @@ Resources:
         Schedule:
           Type: ScheduleV2
           Properties:
-            ScheduleExpression: !Sub "rate(${NormalizeEveryMinutes} minutes)"
+            ScheduleExpression: !If [SingularMinute, "rate(1 minute)", !Sub "rate(${NormalizeEveryMinutes} minutes)"]
             State: !Ref ScheduleState
 
   CompactFunction:
@@ -87,6 +95,27 @@ Resources:
             ScheduleExpressionTimezone: Europe/Oslo
             State: !Ref CompactScheduleState
 
+  CompactHourlyFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: normalizer/Dockerfile
+      DockerContext: ..
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["normalizer.handler.compact_hourly_handler"]
+      Timeout: 900
+      MemorySize: 2048
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref BucketName
+      Events:
+        Schedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(10 * * * ? *)
+            State: !Ref HourlyCompactScheduleState
+
   NormalizeLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -96,4 +125,9 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${CompactFunction}"
+      RetentionInDays: 7
+  CompactHourlyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${CompactHourlyFunction}"
       RetentionInDays: 7

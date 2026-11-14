@@ -5,8 +5,9 @@ collectors' zip + layer packaging):
 
 | Function | Schedule | What it does |
 |---|---|---|
-| `NormalizeFunction` | every `NormalizeEveryMinutes` minutes, default 5 | normalizes raw files newer than each source's watermark and writes one Parquet per source and date folder to `normalized/<date>/` |
-| `CompactFunction` | daily 03:30 Europe/Oslo (`CompactScheduleState`, off by default) | merges the files of closed days (older than 2 days) into one per source and day, removing duplicates, then deletes the inputs |
+| `NormalizeFunction` | every `NormalizeEveryMinutes` minutes, default 1 | normalizes raw files newer than each source's watermark and writes one Parquet per source and date folder to `normalized/<date>/` |
+| `CompactHourlyFunction` | hourly at minute 10 (`HourlyCompactScheduleState`) | merges the per-run files of each closed UTC hour into one `<source>_normalized_<date>_<HH>0000c.parquet` per source and folder, removing duplicates, then deletes the inputs |
+| `CompactFunction` | daily 03:30 Europe/Oslo (`CompactScheduleState`, off by default) | folds the hourly files and any leftovers of days older than 2 days into one file per source and day, removing duplicates, then deletes the inputs |
 
 Progress is one watermark per source in `s3://<bucket>/data/json/normalization_watermark.json`
 (`utils/normalization_state.py`), replacing the 30 MB `normalization_tracking.json`. A raw file that
@@ -15,16 +16,17 @@ fails to read holds the watermark back, so the next run retries it.
 ## Delay this adds
 
 A record reaches the API about `collection interval + NormalizeEveryMinutes + run time` after the source
-published it: up to 5 min extra at the default of 5, up to 60 min if you schedule hourly. An incremental
-run (a few minutes of new raw files) takes 1 to 3 s; a backlog of about 40 minutes of data took 56 s.
+published it: up to about a minute extra at the default of 1, up to 60 min if you schedule hourly. An
+incremental run (a minute or a few of new raw files) takes about 3 s.
 
-How to pick the value: each run writes one new Parquet per source into the day's folder, so the interval
-sets the number of small files (288 per source and day at 5 min, 1440 at 1 min). The API opens the files of
-the days it queries, and the compactor only merges days older than 2, so below about 3 minutes queries over
-the last two days slow down for little gain. For "now" views that must be fresher than the normalization
-interval, read the raw files instead (they are seconds old).
+Running every minute writes one small Parquet per source and run into the day's folder (1440 per source
+and day). The hourly compaction keeps that bounded: only the current hour keeps its per-run files
+(about 60 per source), older hours are one file each, so the API opens roughly 60 + 24 files per source for
+today. Raise `NormalizeEveryMinutes` if you would rather have fewer runs; change it with
+`sam deploy --parameter-overrides NormalizeEveryMinutes=<n> ScheduleState=ENABLED HourlyCompactScheduleState=ENABLED`.
 
-Change it with `sam deploy --parameter-overrides NormalizeEveryMinutes=<n> ScheduleState=ENABLED`.
+The collectors poll faster than some sources change (Vegvesen weather refreshes every 10 min and is polled
+every 3), so consecutive raw files repeat rows; the compaction removes exact duplicates.
 
 ## First deployment
 

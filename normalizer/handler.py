@@ -64,3 +64,8 @@ def normalize_handler(event, context):
 def compact_handler(event, context):
     """Merge the small per-run files of closed days into one file per source and day."""
     return _run_locked("compact", context, compact_normalized.run)
+
+
+def compact_hourly_handler(event, context):
+    """Merge the per-run files of closed hours into one file per source, folder and hour."""
+    return _run_locked("compact_hourly", context, compact_normalized.run_hourly)
