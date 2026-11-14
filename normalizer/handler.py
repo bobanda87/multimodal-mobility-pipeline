@@ -66,6 +66,11 @@ def compact_handler(event, context):
     return _run_locked("compact", context, compact_normalized.run)
 
 
+def _compact_hourly():
+    compact_normalized.run_hourly()
+    compact_normalized.run_siri_hourly()
+
+
 def compact_hourly_handler(event, context):
     """Merge the per-run files of closed hours into one file per source, folder and hour."""
-    return _run_locked("compact_hourly", context, compact_normalized.run_hourly)
+    return _run_locked("compact_hourly", context, _compact_hourly)

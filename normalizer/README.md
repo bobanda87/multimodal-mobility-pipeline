@@ -6,7 +6,7 @@ collectors' zip + layer packaging):
 | Function | Schedule | What it does |
 |---|---|---|
 | `NormalizeFunction` | every `NormalizeEveryMinutes` minutes, default 1 | normalizes raw files newer than each source's watermark and writes one Parquet per source and date folder to `normalized/<date>/` |
-| `CompactHourlyFunction` | hourly at minute 10 (`HourlyCompactScheduleState`) | merges the per-run files of each closed UTC hour into one `<source>_normalized_<date>_<HH>0000c.parquet` per source and folder, removing duplicates, then deletes the inputs |
+| `CompactHourlyFunction` | hourly at minute 10 (`HourlyCompactScheduleState`) | merges the per-run files of each closed UTC hour into one `<source>_normalized_<date>_<HH>0000c.parquet` per source and folder, removing exact duplicates, then deletes the inputs. Also merges the per-pass `journeys_*` and `calls_*` files of `entur_siri_national/` into `<kind>_<HH>0000c.parquet` |
 | `CompactFunction` | daily 03:30 Europe/Oslo (`CompactScheduleState`, off by default) | folds the hourly files and any leftovers of days older than 2 days into one file per source and day, removing duplicates, then deletes the inputs |
 
 Progress is one watermark per source in `s3://<bucket>/data/json/normalization_watermark.json`

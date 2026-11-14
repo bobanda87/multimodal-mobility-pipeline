@@ -3,7 +3,7 @@ from fastapi import Depends, FastAPI
 from mangum import Mangum
 
 from .deps import require_api_key
-from .routers import bikes, flights, meta, results, transit, weather
+from .routers import bikes, flights, meta, results, siri, transit, weather
 
 app = FastAPI(
     title="Smart traffic data API",
@@ -12,7 +12,7 @@ app = FastAPI(
     dependencies=[Depends(require_api_key)],
 )
 
-for module in (meta, bikes, weather, flights, transit, results):
+for module in (meta, bikes, weather, flights, transit, siri, results):
     app.include_router(module.router)
 
 handler = Mangum(app, lifespan="off")
