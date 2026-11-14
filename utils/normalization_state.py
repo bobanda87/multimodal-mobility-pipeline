@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 
 from utils.s3_upload import S3_JSON_PATH, read_json_from_s3, save_json_to_s3
 
-WATERMARK_KEY = f"{S3_JSON_PATH.rstrip('/')}/normalization_watermark.json"
+# save_json_to_s3 takes a key relative to S3_JSON_PATH, read_json_from_s3 takes the full key
+WATERMARK_NAME = "normalization_watermark.json"
+WATERMARK_KEY = f"{S3_JSON_PATH.rstrip('/')}/{WATERMARK_NAME}"
 
 
 def _parse(value: str) -> datetime:
@@ -63,7 +65,7 @@ class Watermarks:
             if newest == old:
                 boundary |= set(current["boundary_keys"])
         self._data[source] = {"last_modified": newest.isoformat(), "boundary_keys": sorted(boundary)}
-        return save_json_to_s3(self._data, WATERMARK_KEY)
+        return save_json_to_s3(self._data, WATERMARK_NAME)
 
     def set(self, source: str, last_modified: datetime, boundary_keys: list[str]) -> None:
         """Used by the migration from the old tracking file; call save() afterwards."""
@@ -73,4 +75,4 @@ class Watermarks:
         }
 
     def save(self) -> bool:
-        return save_json_to_s3(self._data, WATERMARK_KEY)
+        return save_json_to_s3(self._data, WATERMARK_NAME)
