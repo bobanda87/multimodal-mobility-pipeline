@@ -22,7 +22,7 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from utils.s3_upload import save_json_to_s3, save_parquet_to_s3
+from utils.s3_upload import save_parquet_to_s3
 
                                         
 OPERATORS = [
@@ -235,21 +235,51 @@ def fetch_gtfs_rt_feed(operator: str, feed_type: str) -> list[dict] | None:
         today = datetime.now().strftime("%Y-%m-%d")
         ts = datetime.now().strftime("%H%M%S")
                                                                                                  
-        json_s3_key = f"entur/{today}/{operator}_{feed_type}_{ts}.json"
         parquet_s3_key = f"entur/{today}/{operator}_{feed_type}_{ts}.parquet"
         df = pd.DataFrame(decoded)
-        save_json_to_s3(decoded, json_s3_key)
         save_parquet_to_s3(df, parquet_s3_key)
         print(f"  {operator} {feed_type}: {len(decoded)} records -> S3")
     return decoded
 
 
-def run_collector(interval_seconds: int = 60):
+def run_slot(slot: int):
     """
-    Main loop: every interval_seconds do one request (4 per minute).
-    Rotates: SIRI ET (2/min), vehicle-positions (1/min), alerts (1/min), round-robin operators.
+    One request for a given slot number (4 requests/min, round-robin over operators).
+    Rotates: SIRI ET (2/min), vehicle-positions (1/min), alerts (1/min).
     Each run saves a NEW file (timestamp in name); multiple files per day per type are intentional (time-series snapshots).
     """
+    start_time = datetime.now()
+    operator = OPERATORS[(slot // 4) % len(OPERATORS)]
+    kind = slot % 4
+
+    if kind in (0, 1):
+        print(f"[{start_time.strftime('%Y-%m-%d %H:%M:%S')}] SIRI ET {operator}...")
+        decoded = fetch_siri_et(operator)
+        if decoded:
+            today = datetime.now().strftime("%Y-%m-%d")
+            ts = datetime.now().strftime("%H%M%S")
+            parquet_s3_key = f"entur/{today}/{operator}_siri_et_{ts}.parquet"
+            df = pd.DataFrame(decoded)
+            save_parquet_to_s3(df, parquet_s3_key)
+            print(f"  {operator} siri_et: {len(decoded)} journeys -> S3")
+        else:
+            print(f"  {operator} siri_et: no data")
+    elif kind == 2:
+        print(f"[{start_time.strftime('%Y-%m-%d %H:%M:%S')}] vehicle-positions {operator}...")
+        fetch_gtfs_rt_feed(operator, "vehicle-positions")
+    else:
+        print(f"[{start_time.strftime('%Y-%m-%d %H:%M:%S')}] alerts {operator}...")
+        fetch_gtfs_rt_feed(operator, "alerts")
+
+
+def lambda_handler(event, context):
+    # Lambda is stateless: derive the slot from the clock (one slot per minute)
+    run_slot(int(time.time() // 60))
+    return {"status": "ok"}
+
+
+def run_collector(interval_seconds: int = 60):
+    """Main loop: every interval_seconds do one request (4 per minute)."""
     print(
         "Starting Entur collector: SIRI ET + vehicle-positions + alerts "
         "(4 requests/min, round-robin).\n"
@@ -257,30 +287,7 @@ def run_collector(interval_seconds: int = 60):
     slot = 0
     while True:
         start_time = datetime.now()
-        operator = OPERATORS[(slot // 4) % len(OPERATORS)]
-        kind = slot % 4                                                       
-
-        if kind in (0, 1):
-            print(f"[{start_time.strftime('%Y-%m-%d %H:%M:%S')}] SIRI ET {operator}...")
-            decoded = fetch_siri_et(operator)
-            if decoded:
-                today = datetime.now().strftime("%Y-%m-%d")
-                ts = datetime.now().strftime("%H%M%S")
-                json_s3_key = f"entur/{today}/{operator}_siri_et_{ts}.json"
-                parquet_s3_key = f"entur/{today}/{operator}_siri_et_{ts}.parquet"
-                df = pd.DataFrame(decoded)
-                save_json_to_s3(decoded, json_s3_key)
-                save_parquet_to_s3(df, parquet_s3_key)
-                print(f"  {operator} siri_et: {len(decoded)} journeys -> S3")
-            else:
-                print(f"  {operator} siri_et: no data")
-        elif kind == 2:
-            print(f"[{start_time.strftime('%Y-%m-%d %H:%M:%S')}] vehicle-positions {operator}...")
-            fetch_gtfs_rt_feed(operator, "vehicle-positions")
-        else:
-            print(f"[{start_time.strftime('%Y-%m-%d %H:%M:%S')}] alerts {operator}...")
-            fetch_gtfs_rt_feed(operator, "alerts")
-
+        run_slot(slot)
         slot += 1
         duration = (datetime.now() - start_time).total_seconds()
         sleep_for = max(0, interval_seconds - duration)

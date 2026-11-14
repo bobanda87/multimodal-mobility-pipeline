@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Data collectors (Avinor, Entur, Oslo Bysykkel, Vegvesen) as scheduled Lambda functions writing Parquet to S3.
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: phdprojectdata
+  ParquetPath:
+    Type: String
+    Default: data/parquet
+  # Public AWS SDK for pandas layer (pandas + pyarrow + numpy). Version is region specific.
+  PandasLayerArn:
+    Type: String
+    Default: arn:aws:lambda:eu-north-1:336392948345:layer:AWSSDKPandas-Python312:32
+  VegvesenUser:
+    Type: String
+    NoEcho: true
+  VegvesenPass:
+    Type: String
+    NoEcho: true
+  # Schedules are created DISABLED so you can test-invoke first; redeploy with ENABLED to start collecting.
+  ScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    CodeUri: .
+    Layers: [!Ref PandasLayerArn]
+    Environment:
+      Variables:
+        S3_BUCKET_NAME: !Ref BucketName
+        S3_PARQUET_PATH: !Ref ParquetPath
+        # Keep object keys (date folder, HHMMSS) in the same local time as the original collectors
+        TZ: Europe/Oslo
+
+Resources:
+  AvinorFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      Handler: avinor.avinor_collect.lambda_handler
+      Timeout: 170
+      MemorySize: 1024
+      LoggingConfig:
+        LogGroup: !Ref AvinorLogGroup
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref BucketName
+      Events:
+        Schedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(3 minutes)
+            State: !Ref ScheduleState
+  AvinorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
+  EnturFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      Handler: entur.entur_siri_et_collect.lambda_handler
+      Timeout: 90
+      MemorySize: 1024
+      LoggingConfig:
+        LogGroup: !Ref EnturLogGroup
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref BucketName
+      Events:
+        Schedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 minute)
+            State: !Ref ScheduleState
+  EnturLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
+  OsloBysykkelFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      Handler: oslobysykkel.oslobysykkel_collect.lambda_handler
+      Timeout: 75
+      MemorySize: 512
+      LoggingConfig:
+        LogGroup: !Ref OsloBysykkelLogGroup
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref BucketName
+      Events:
+        Schedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 minute)
+            State: !Ref ScheduleState
+  OsloBysykkelLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
+  VegvesenFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      Handler: vegvesen.vegvesen_collect.lambda_handler
+      Timeout: 170
+      MemorySize: 1024
+      LoggingConfig:
+        LogGroup: !Ref VegvesenLogGroup
+      Environment:
+        Variables:
+          VEGVESEN_USER: !Ref VegvesenUser
+          VEGVESEN_PASS: !Ref VegvesenPass
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref BucketName
+      Events:
+        Schedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(3 minutes)
+            State: !Ref ScheduleState
+  VegvesenLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
+Outputs:
+  Functions:
+    Value: !Sub "${AvinorFunction}, ${EnturFunction}, ${OsloBysykkelFunction}, ${VegvesenFunction}"

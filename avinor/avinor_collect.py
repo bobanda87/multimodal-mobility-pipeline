@@ -21,7 +21,9 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from utils.s3_upload import save_json_to_s3, save_parquet_to_s3
+from concurrent.futures import ThreadPoolExecutor
+
+from utils.s3_upload import save_parquet_to_s3
 
 HEADERS = {"User-Agent": "AvinorDataCollector/1.0 (+https://avinor.no)"}
 
@@ -79,11 +81,9 @@ def fetch_flight_data(airport_code):
                              
         today = datetime.now().strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%H%M%S")
-        json_s3_key = f"avinor/{today}/{airport_code}_{timestamp}.json"
         parquet_s3_key = f"avinor/{today}/{airport_code}_{timestamp}.parquet"
 
         df = pd.DataFrame(flights)
-        save_json_to_s3(flights, json_s3_key)
         save_parquet_to_s3(df, parquet_s3_key)
 
         print(f"{airport_code}: {len(flights)} flights saved to S3")
@@ -93,15 +93,35 @@ def fetch_flight_data(airport_code):
         return None
 
 
+_airports_cache = None
+
+
+def run_once(max_workers=1):
+    """One collection pass over all airports (airport list is cached across warm Lambda invocations)."""
+    global _airports_cache
+    if not _airports_cache:
+        _airports_cache = fetch_airports()
+        print(f"Fetched {len(_airports_cache)} airports.\n")
+    codes = [ap["code"] for ap in _airports_cache]
+    if max_workers <= 1:
+        for code in codes:
+            fetch_flight_data(code)
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            list(pool.map(fetch_flight_data, codes))
+
+
+def lambda_handler(event, context):
+    run_once(max_workers=32)
+    return {"status": "ok"}
+
+
 def run_collector(interval=180):
     print("Starting Avinor flight data collector...\n")
-    airports = fetch_airports()
-    print(f"Fetched {len(airports)} airports.\n")
     while True:
         start_time = datetime.now()
         print(f"New cycle at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        for ap in airports:
-            fetch_flight_data(ap["code"])
+        run_once()
         duration = (datetime.now() - start_time).total_seconds()
         print(f"Cycle completed in {duration:.1f}s")
         print(f"Sleeping {interval}s before next pull...\n")

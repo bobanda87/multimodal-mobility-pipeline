@@ -220,3 +220,10 @@ oslobysykkel/oslobysykkel_log.txt
 
 normalized_data/
 logs/
+
+# SAM build output
+.aws-sam/
+
+# Large temporary files (572 MB GTFS download, 166 MB S3 key inventory)
+analysis/reference/_gtfs_norway_tmp.zip
+analysis/output/s3_all_keys.csv

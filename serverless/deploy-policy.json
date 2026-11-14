@@ -1,0 +1,105 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CloudFormationStacks",
+      "Effect": "Allow",
+      "Action": "cloudformation:*",
+      "Resource": [
+        "arn:aws:cloudformation:eu-north-1:173471018037:stack/phd-*/*",
+        "arn:aws:cloudformation:eu-north-1:173471018037:stack/aws-sam-cli-managed-default/*",
+        "arn:aws:cloudformation:eu-north-1:aws:transform/Serverless-2016-10-31"
+      ]
+    },
+    {
+      "Sid": "ReadOnlyGlobal",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:ValidateTemplate",
+        "cloudformation:ListStacks",
+        "logs:DescribeLogGroups"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SamArtifactBucket",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::aws-sam-cli-managed-default-*",
+        "arn:aws:s3:::aws-sam-cli-managed-default-*/*"
+      ]
+    },
+    {
+      "Sid": "LambdaFunctions",
+      "Effect": "Allow",
+      "Action": "lambda:*",
+      "Resource": "arn:aws:lambda:eu-north-1:173471018037:function:phd-*"
+    },
+    {
+      "Sid": "UsePublicPandasLayer",
+      "Effect": "Allow",
+      "Action": "lambda:GetLayerVersion",
+      "Resource": "arn:aws:lambda:eu-north-1:336392948345:layer:AWSSDKPandas-Python312:*"
+    },
+    {
+      "Sid": "StackRolesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies"
+      ],
+      "Resource": "arn:aws:iam::173471018037:role/phd-*"
+    },
+    {
+      "Sid": "LogGroups",
+      "Effect": "Allow",
+      "Action": "logs:*",
+      "Resource": [
+        "arn:aws:logs:eu-north-1:173471018037:log-group:*phd-*",
+        "arn:aws:logs:eu-north-1:173471018037:log-group:*phd-*:*"
+      ]
+    },
+    {
+      "Sid": "ContainerImageRepositories",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:CompleteLayerUpload",
+        "ecr:DescribeImages",
+        "ecr:DescribeRepositories",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:InitiateLayerUpload",
+        "ecr:ListImages",
+        "ecr:PutImage",
+        "ecr:UploadLayerPart"
+      ],
+      "Resource": "arn:aws:ecr:eu-north-1:173471018037:repository/phd-*"
+    },
+    {
+      "Sid": "EcrLogin",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "Schedules",
+      "Effect": "Allow",
+      "Action": "scheduler:*",
+      "Resource": "arn:aws:scheduler:eu-north-1:173471018037:schedule/default/*FunctionSchedule"
+    }
+  ]
+}

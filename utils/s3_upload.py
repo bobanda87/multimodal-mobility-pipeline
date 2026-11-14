@@ -38,7 +38,10 @@ S3_PARQUET_PATH = os.getenv("S3_PARQUET_PATH", "data/parquet")
 
                                                    
 s3_client = None
-if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and S3_BUCKET_NAME:
+if os.getenv("AWS_LAMBDA_FUNCTION_NAME") and S3_BUCKET_NAME:
+    # Lambda: use the execution role (the runtime's temporary keys also need a session token)
+    s3_client = boto3.client('s3', region_name=AWS_REGION)
+elif AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and S3_BUCKET_NAME:
     try:
         s3_client = boto3.client(
             's3',

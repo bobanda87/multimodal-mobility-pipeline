@@ -15,7 +15,7 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from utils.s3_upload import save_json_to_s3, save_parquet_to_s3
+from utils.s3_upload import save_parquet_to_s3
 
                                   
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -34,6 +34,26 @@ FEEDS = {
         "https://datex-server-get-v3-1.atlas.vegvesen.no/datexapi/"
         "GetMeasurementWeatherSiteTable/pullsnapshotdata"
     ),
+}
+
+
+# The server assigns the nsN prefixes itself and has changed them over time. Map namespace URIs to the prefixes
+# used in the historical data (ns10 = roadTrafficData, ns8 = locationReferencing, ...) so column names stay stable.
+DATEX = "http://datex2.eu/schema/3/"
+NAMESPACES = {
+    DATEX + "common": None,
+    "http://www.w3.org/2001/XMLSchema-instance": "xsi",
+    DATEX + "messageContainer": "ns2",
+    DATEX + "cisInformation": "ns3",
+    DATEX + "exchangeInformation": "ns4",
+    DATEX + "informationManagement": "ns5",
+    DATEX + "cctvExtension": "ns6",
+    DATEX + "dataDictionaryExtension": "ns7",
+    DATEX + "locationReferencing": "ns8",
+    DATEX + "alertCLocationCodeTableExtension": "ns9",
+    DATEX + "roadTrafficData": "ns10",
+    DATEX + "vms": "ns11",
+    DATEX + "situation": "ns12",
 }
 
 
@@ -111,7 +131,8 @@ def fetch_datex_data(feed_name, url):
         print(f"{feed_name} -> Connection error: {e}")
         return None
 
-    data = xmltodict.parse(response.text)
+    data = xmltodict.parse(
+        response.text, process_namespaces=True, namespaces=NAMESPACES)
 
     try:
         if feed_name == "traffic_situations":
@@ -154,13 +175,10 @@ def fetch_datex_data(feed_name, url):
         timestamp = datetime.now().strftime("%H%M%S")
                                                                                  
         if feed_name == "weather_site_table":
-            json_s3_key = "vegvesen/reference/weather_site_table.json"
             parquet_s3_key = "vegvesen/reference/weather_site_table.parquet"
         else:
-            json_s3_key = f"vegvesen/{today}/{feed_name}_{timestamp}.json"
             parquet_s3_key = f"vegvesen/{today}/{feed_name}_{timestamp}.parquet"
 
-        save_json_to_s3(data, json_s3_key)
         save_parquet_to_s3(df, parquet_s3_key)
 
         print(f"{feed_name}: {len(df)} records saved to S3")
@@ -168,14 +186,24 @@ def fetch_datex_data(feed_name, url):
         print(f"{feed_name} -> Could not convert to parquet: {e}")
 
 
+def run_once():
+    """One collection pass (weather_site_table is reference data, pulled separately)."""
+    fetch_datex_data("traffic_situations", FEEDS["traffic_situations"])
+    fetch_datex_data("travel_times", FEEDS["travel_times"])
+    fetch_datex_data("weather_data", FEEDS["weather_data"])
+
+
+def lambda_handler(event, context):
+    run_once()
+    return {"status": "ok"}
+
+
 def run_collector(interval=180):
     print("Starting Statens Vegvesen DATEX collector...\n")
     while True:
         start = datetime.now()
         print(f"New cycle at {start.strftime('%Y-%m-%d %H:%M:%S')}")
-        fetch_datex_data("traffic_situations", FEEDS["traffic_situations"])
-        fetch_datex_data("travel_times", FEEDS["travel_times"])
-        fetch_datex_data("weather_data", FEEDS["weather_data"])
+        run_once()
         duration = (datetime.now() - start).total_seconds()
         print(f"Cycle completed in {duration:.1f}s")
         print(f"Sleeping {interval}s before next pull...\n")
