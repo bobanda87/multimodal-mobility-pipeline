@@ -26,3 +26,16 @@ certifi
 
 # Plotting
 matplotlib
+pillow
+
+# Statistics and machine learning (analysis/)
+numpy
+scipy
+scikit-learn
+
+# Spatial statistics: Moran's I / LISA (analysis/multi_city_spatial_autocorrelation.py)
+libpysal
+esda
+
+# Deployment of the Lambda stacks (serverless/, api/, normalizer/); `pip install` works without brew
+aws-sam-cli
