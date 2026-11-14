@@ -1,0 +1,87 @@
+S3 client initialized successfully. Bucket: phdprojectdata
+Loading 263 normalized files from S3...
+
+Filtering data by time period:
+  Start: 2026-01-31 00:00:00+00:00
+  End: 2026-02-07 23:59:59.999999+00:00
+  Period: 7 days
+
+  avinor: 90,878 -> 29,280 records (32.2% retained)
+  oslobysykkel: 2,068,205 -> 2,023,636 records (97.8% retained)
+  vegvesen: 55,842,011 -> 21,349,679 records (38.2% retained)
+  vegvesen_travel_times: 8,141,004 -> 1,572,368 records (19.3% retained)
+  entur_siri_et: 2,353,336 -> 804,506 records (34.2% retained)
+  vegvesen_traffic_situations: 899,248 -> 337,784 records (37.6% retained)
+Location->zone loaded: 3 stations
+Vegvesen data loaded: 21349679 records
+Vegvesen columns: ['location', 'metric_name', 'metric_value', 'timestamp', 'source', 'road_temperature', 'air_temperature', 'precipitation_intensity', 'wind_speed', 'wind_direction_bearing', 'max_wind_speed', 'relative_humidity', 'dew_point_temperature', 'measurement_type']
+  Joined zone: 100855 records with zone (deo grada)
+Weather data aggregated: 7376 time buckets (source: road_temperature)
+  Weather minute range: shape: (1, 2)
+┌─────────────────────────┬─────────────────────────┐
+│ min_minute              ┆ max_minute              │
+│ ---                     ┆ ---                     │
+│ datetime[μs, UTC]       ┆ datetime[μs, UTC]       │
+╞═════════════════════════╪═════════════════════════╡
+│ 2026-01-31 00:00:00 UTC ┆ 2026-02-07 23:59:00 UTC │
+└─────────────────────────┴─────────────────────────┘
+  Weather by zone (deo grada): 2183 rows, zones: ['vest', 'nord']
+Oslo Bysykkel raw data: 2023636 records
+Oslo Bysykkel aggregated: 4063 time buckets
+Bysykkel minute range: shape: (1, 2)
+┌─────────────────────────┬─────────────────────────┐
+│ min_minute              ┆ max_minute              │
+│ ---                     ┆ ---                     │
+│ datetime[μs, UTC]       ┆ datetime[μs, UTC]       │
+╞═════════════════════════╪═════════════════════════╡
+│ 2026-01-31 00:00:00 UTC ┆ 2026-02-07 23:57:00 UTC │
+└─────────────────────────┴─────────────────────────┘
+Bikes data overlap: 2608 records with both temperature and bikes
+Transport data overlap: 6747 records with both temperature and transport
+
+============================================================
+WEATHER IMPACT ANALYSIS RESULTS
+============================================================
+
+Date range analyzed:
+  Start: 2026-01-31 00:00:00+00:00
+  End: 2026-02-07 23:59:00+00:00
+
+Road surface temperature (°C):
+  Min: -17.9 °C, Max: 5.0 °C, Mean: -6.9 °C, Std: 4.3 °C (n=7376)
+
+Sample size: 7376 minutes
+
+Data summary:
+  weather_records: 7376
+  bysykkel_records: 4063
+  entur_siri_et_records: 10781
+  avinor_records: 1628
+
+Correlations:
+  temperature_vs_bysykkel: -0.032
+  temperature_vs_public_transport: 0.032
+  temperature_vs_flight_activity: -0.124
+  temperature_vs_multimodal: 0.029
+  temperature_vs_delay: 0.019
+  temperature_vs_travel_time: -0.001
+  temperature_vs_traffic_incidents: -0.043
+
+Correlations by zone (temp in zone vs global bikes/delay):
+  nord: {'temp_vs_bysykkel': 0.031597012849708124, 'temp_vs_delay': 0.06050666479984084}
+  vest: {'temp_vs_bysykkel': 0.05373717312501031, 'temp_vs_delay': 0.0684187853492472}
+
+Regression (mean_delay_sec ~ road_temperature):
+  R²: 0.0003563646497760642
+  Coefficients: {'intercept': 136.80200775820825, 'road_temperature': 1.3117545787032159}
+
+Interpretation:
+  bysykkel: Weak or no clear relationship detected.
+  public_transport: Public transport appears resilient to temperature changes.
+  aviation: No strong temperature impact on flight activity detected.
+  multimodal: Weak linear relationship between temperature and combined multimodal activity.
+  delay: Weak linear relationship between temperature and PT delay.
+
+Delay note:
+  Delay data: Entur SIRI ET (Estimated Timetable) provides arrival_delay/departure_delay. Analysis uses normalized entur_siri_et, aggregated by minute, with temperature_vs_delay correlation.
+Plots saved to analysis/output/window_W-B

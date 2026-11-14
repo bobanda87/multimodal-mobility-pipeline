@@ -1,0 +1,22 @@
+Weather analiza W-A / W-B / W-C — status posle pokretanja (analyze_weather_impact.py)
+
+W-B (2026-01-31 – 2026-02-07)
+  OK: compare + single + grafici u analysis/output/window_W-B/
+  CSV rezime: analysis/output/weather_wa_wb_wc_summary.csv
+  Tabela compare: analysis/output/compare_wa_wb_wc.txt
+
+W-A (2025-12-20 – 2026-01-04) i W-C (2026-03-07 – 2026-03-14)
+  Nema podataka posle vremenskog filtera: svi izvori 0 redova u opsegu.
+  Ucitano je 263 normalizovanih fajlova sa S3, ali timestamp kolone u tim
+  fajlovima ne padaju u kalendar W-A / W-C (verovatno normalizacija nije
+  obuhvatila te datume, ili su vremena u drugoj zoni / pogresno polje).
+
+Sledeci korak za W-A i W-C
+  Ponovo pokreni: python analysis/normalize_data.py --all
+  ili intervalno npr. --start-date 2025-12-20 --end-date 2026-01-04 i
+  --start-date 2026-03-07 --end-date 2026-03-14
+  pa ponovo: python analysis/analyze_weather_impact.py --mode compare --periods wa_wb_wc
+
+Kod
+  Ispravljen Entur SIRI ET delay agregat (_agg_ts): timestamp kao Datetime
+  sada se konvertuje u Unix s pre spajanja sa departure_timestamp.

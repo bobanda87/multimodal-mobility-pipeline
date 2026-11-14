@@ -1,0 +1,21 @@
+S3 client initialized successfully. Bucket: phdprojectdata
+Comparing 3 periods: wa_wb_wc
+
+(Učitano 407 normalizovanih fajlova sa S3.)
+
+W-A: entur_siri_et posle vremenskog filtera 0 redova -> PT i Delay korelacije N/A.
+Ostali izvori u W-A: avinor, oslo, vegvesen, travel_times, traffic_situations — OK.
+
+Uporedna tabela (Pearson, temperatura vs metrika):
+
+Period                          Bysykkel   PT      Flight   Multimodal   Delay
+W-A (2025-12-20 – 2026-01-04)   -0.393     N/A     -0.063   -0.001       N/A
+W-B (2026-01-31 – 2026-02-07)   -0.032     0.032   -0.124   0.029        0.019
+W-C (2026-03-07 – 2026-03-14)   0.054      0.075   -0.002   0.006        0.018
+
+Temperatura kolovoza (°C) po periodu:
+
+Period                          Min       Max      Mean     Std
+W-A                             -13.6     10.0     -2.7     4.4
+W-B                             -17.9     5.0      -6.9     4.3
+W-C                             -2.4      15.1     4.1      2.7

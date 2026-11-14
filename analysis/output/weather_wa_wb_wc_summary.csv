@@ -1,0 +1,2 @@
+start_date,end_date,part_of_day,temperature_vs_bysykkel,temperature_vs_public_transport,temperature_vs_flight_activity,temperature_vs_multimodal,temperature_vs_delay,temperature_vs_travel_time,temperature_vs_traffic_incidents,sample_size_minutes
+2026-01-31,2026-02-07,,-0.03206934729682642,0.032154646233037626,-0.12422781290135308,0.02891614862942793,0.018877622990543776,-0.0006436783372998086,-0.043428666635881935,7376

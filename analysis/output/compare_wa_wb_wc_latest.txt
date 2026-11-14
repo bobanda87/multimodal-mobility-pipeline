@@ -1,0 +1,154 @@
+S3 client initialized successfully. Bucket: phdprojectdata
+Comparing 3 periods: wa_wb_wc
+
+============================================================
+Analyzing period: W-A (2025-12-20 – 2026-01-04)
+============================================================
+Loading 503 normalized files from S3...
+
+Filtering data by time period:
+  Start: 2025-12-20 00:00:00+00:00
+  End: 2026-01-04 23:59:59+00:00
+  Period: 15 days
+
+  avinor: 134,848 -> 27,764 records (20.6% retained)
+  oslobysykkel: 4,597,965 -> 1,583,640 records (34.4% retained)
+  vegvesen: 80,987,987 -> 15,258,964 records (18.8% retained)
+  vegvesen_travel_times: 12,057,380 -> 1,231,796 records (10.2% retained)
+  entur_siri_et: 3,517,690 -> 0 records (0.0% retained)
+  vegvesen_traffic_situations: 1,297,821 -> 195,218 records (15.0% retained)
+Location->zone loaded: 3 stations
+Vegvesen data loaded: 15258964 records
+Vegvesen columns: ['location', 'metric_name', 'metric_value', 'timestamp', 'source', 'road_temperature', 'air_temperature', 'precipitation_intensity', 'wind_speed', 'wind_direction_bearing', 'max_wind_speed', 'relative_humidity', 'dew_point_temperature', 'measurement_type']
+  Joined zone: 72696 records with zone (deo grada)
+Weather data aggregated: 5131 time buckets (source: road_temperature)
+  Weather minute range: shape: (1, 2)
+┌─────────────────────────┬─────────────────────────┐
+│ min_minute              ┆ max_minute              │
+│ ---                     ┆ ---                     │
+│ datetime[μs, UTC]       ┆ datetime[μs, UTC]       │
+╞═════════════════════════╪═════════════════════════╡
+│ 2025-12-20 15:10:00 UTC ┆ 2026-01-04 22:50:00 UTC │
+└─────────────────────────┴─────────────────────────┘
+  Weather by zone (deo grada): 1954 rows, zones: ['nord', 'vest']
+Oslo Bysykkel raw data: 1583640 records
+Oslo Bysykkel aggregated: 3180 time buckets
+Bysykkel minute range: shape: (1, 2)
+┌─────────────────────────┬─────────────────────────┐
+│ min_minute              ┆ max_minute              │
+│ ---                     ┆ ---                     │
+│ datetime[μs, UTC]       ┆ datetime[μs, UTC]       │
+╞═════════════════════════╪═════════════════════════╡
+│ 2025-12-20 15:40:00 UTC ┆ 2026-01-04 22:57:00 UTC │
+└─────────────────────────┴─────────────────────────┘
+Bikes data overlap: 1369 records with both temperature and bikes
+Transport data overlap: 0 records with both temperature and transport
+
+============================================================
+Analyzing period: W-B (2026-01-31 – 2026-02-07)
+============================================================
+Loading 503 normalized files from S3...
+
+Filtering data by time period:
+  Start: 2026-01-31 00:00:00+00:00
+  End: 2026-02-07 23:59:59+00:00
+  Period: 7 days
+
+  avinor: 134,848 -> 29,280 records (21.7% retained)
+  oslobysykkel: 4,597,965 -> 2,023,636 records (44.0% retained)
+  vegvesen: 80,987,987 -> 21,349,679 records (26.4% retained)
+  vegvesen_travel_times: 12,057,380 -> 1,572,368 records (13.0% retained)
+  entur_siri_et: 3,517,690 -> 804,506 records (22.9% retained)
+  vegvesen_traffic_situations: 1,297,821 -> 337,784 records (26.0% retained)
+Location->zone loaded: 3 stations
+Vegvesen data loaded: 21349679 records
+Vegvesen columns: ['location', 'metric_name', 'metric_value', 'timestamp', 'source', 'road_temperature', 'air_temperature', 'precipitation_intensity', 'wind_speed', 'wind_direction_bearing', 'max_wind_speed', 'relative_humidity', 'dew_point_temperature', 'measurement_type']
+  Joined zone: 100855 records with zone (deo grada)
+Weather data aggregated: 7376 time buckets (source: road_temperature)
+  Weather minute range: shape: (1, 2)
+┌─────────────────────────┬─────────────────────────┐
+│ min_minute              ┆ max_minute              │
+│ ---                     ┆ ---                     │
+│ datetime[μs, UTC]       ┆ datetime[μs, UTC]       │
+╞═════════════════════════╪═════════════════════════╡
+│ 2026-01-31 00:00:00 UTC ┆ 2026-02-07 23:59:00 UTC │
+└─────────────────────────┴─────────────────────────┘
+  Weather by zone (deo grada): 2183 rows, zones: ['vest', 'nord']
+Oslo Bysykkel raw data: 2023636 records
+Oslo Bysykkel aggregated: 4063 time buckets
+Bysykkel minute range: shape: (1, 2)
+┌─────────────────────────┬─────────────────────────┐
+│ min_minute              ┆ max_minute              │
+│ ---                     ┆ ---                     │
+│ datetime[μs, UTC]       ┆ datetime[μs, UTC]       │
+╞═════════════════════════╪═════════════════════════╡
+│ 2026-01-31 00:00:00 UTC ┆ 2026-02-07 23:57:00 UTC │
+└─────────────────────────┴─────────────────────────┘
+Bikes data overlap: 2608 records with both temperature and bikes
+Transport data overlap: 6747 records with both temperature and transport
+
+============================================================
+Analyzing period: W-C (2026-03-07 – 2026-03-14)
+============================================================
+Loading 503 normalized files from S3...
+
+Filtering data by time period:
+  Start: 2026-03-07 00:00:00+00:00
+  End: 2026-03-14 23:59:59+00:00
+  Period: 7 days
+
+  avinor: 134,848 -> 15,010 records (11.1% retained)
+  oslobysykkel: 4,597,965 -> 946,120 records (20.6% retained)
+  vegvesen: 80,987,987 -> 9,887,012 records (12.2% retained)
+  vegvesen_travel_times: 12,057,380 -> 726,190 records (6.0% retained)
+  entur_siri_et: 3,517,690 -> 411,529 records (11.7% retained)
+  vegvesen_traffic_situations: 1,297,821 -> 203,355 records (15.7% retained)
+Location->zone loaded: 3 stations
+Vegvesen data loaded: 9887012 records
+Vegvesen columns: ['location', 'metric_name', 'metric_value', 'timestamp', 'source', 'road_temperature', 'air_temperature', 'precipitation_intensity', 'wind_speed', 'wind_direction_bearing', 'max_wind_speed', 'relative_humidity', 'dew_point_temperature', 'measurement_type']
+  Joined zone: 46534 records with zone (deo grada)
+Weather data aggregated: 6635 time buckets (source: road_temperature)
+  Weather minute range: shape: (1, 2)
+┌─────────────────────────┬─────────────────────────┐
+│ min_minute              ┆ max_minute              │
+│ ---                     ┆ ---                     │
+│ datetime[μs, UTC]       ┆ datetime[μs, UTC]       │
+╞═════════════════════════╪═════════════════════════╡
+│ 2026-03-07 00:00:00 UTC ┆ 2026-03-14 23:50:00 UTC │
+└─────────────────────────┴─────────────────────────┘
+  Weather by zone (deo grada): 2196 rows, zones: ['vest', 'nord']
+Oslo Bysykkel raw data: 946120 records
+Oslo Bysykkel aggregated: 3815 time buckets
+Bysykkel minute range: shape: (1, 2)
+┌─────────────────────────┬─────────────────────────┐
+│ min_minute              ┆ max_minute              │
+│ ---                     ┆ ---                     │
+│ datetime[μs, UTC]       ┆ datetime[μs, UTC]       │
+╞═════════════════════════╪═════════════════════════╡
+│ 2026-03-07 00:00:00 UTC ┆ 2026-03-14 23:58:00 UTC │
+└─────────────────────────┴─────────────────────────┘
+Bikes data overlap: 2204 records with both temperature and bikes
+Transport data overlap: 6040 records with both temperature and transport
+
+============================================================================================================================================================================
+COMPARATIVE CORRELATIONS (for manuscript table)
+============================================================================================================================================================================
+Period                          Bysykkel                    PT                          Flight                      Multimodal                  Delay                       
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+W-A (2025-12-20 – 2026-01-04)   -0.393                      N/A                         -0.063                      -0.001                      N/A                         
+W-B (2026-01-31 – 2026-02-07)   -0.032                      0.032                       -0.124                      0.029                       0.019                       
+W-C (2026-03-07 – 2026-03-14)   0.054                       0.075                       -0.002                      0.006                       0.018                       
+============================================================================================================================================================================
+
+============================================================================================================================================================================
+ROAD SURFACE TEMPERATURE (°C) BY PERIOD
+============================================================================================================================================================================
+Period                          Min (°C)      Max (°C)      Mean (°C)       Std (°C)
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+W-A (2025-12-20 – 2026-01-04)   -13.6         10.0          -2.7            4.4
+W-B (2026-01-31 – 2026-02-07)   -17.9         5.0           -6.9            4.3
+W-C (2026-03-07 – 2026-03-14)   -2.4          15.1          4.1             2.7
+============================================================================================================================================================================
+
+Delay note:
+Delay data: Entur SIRI ET (Estimated Timetable) provides arrival_delay/departure_delay. Analysis uses normalized entur_siri_et, aggregated by minute, with temperature_vs_delay correlation.

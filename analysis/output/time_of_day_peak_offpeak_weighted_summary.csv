@@ -1,0 +1,5 @@
+mode,weighted_peak_mean,weighted_offpeak_mean,weighted_ratio
+Bikes,10338.16,9758.32,1.06
+PT,527.65,431.1,1.22
+Flight,19.08,14.42,1.32
+Multimodal,0.48,0.36,1.32

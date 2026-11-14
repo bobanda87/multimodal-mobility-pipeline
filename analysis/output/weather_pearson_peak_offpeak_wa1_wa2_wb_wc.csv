@@ -1,0 +1,9 @@
+period,segment,pearson_temp_vs_bikes,pearson_temp_vs_public_transport,pearson_temp_vs_delay,n_minutes,n_temp_bikes,n_temp_pt,n_temp_delay,peak_definition
+W-A1 (2025-12-20 – 2025-12-27),peak,0.04764770447457144,0.10178949664677721,-0.07537828958764355,635,174,126,126,UTC; Mon–Fri (weekday); peak = 07:00–09:59 and 15:00–17:59; off-peak = all other minutes in the sample.
+W-A1 (2025-12-20 – 2025-12-27),offpeak,0.4738001888850651,0.09640840398317212,-0.21700864325906877,1828,440,414,414,UTC; Mon–Fri (weekday); peak = 07:00–09:59 and 15:00–17:59; off-peak = all other minutes in the sample.
+W-A2 (2025-12-28 – 2026-01-04),peak,-0.0033727782476354923,-0.06126703141951416,0.12977067749113722,465,131,120,120,UTC; Mon–Fri (weekday); peak = 07:00–09:59 and 15:00–17:59; off-peak = all other minutes in the sample.
+W-A2 (2025-12-28 – 2026-01-04),offpeak,-0.7280769920372172,0.023713785723599418,0.17377294799577345,2203,624,648,648,UTC; Mon–Fri (weekday); peak = 07:00–09:59 and 15:00–17:59; off-peak = all other minutes in the sample.
+W-B (2026-01-31 – 2026-02-07),peak,0.03121781574981869,0.11900330970838342,-0.04800245621009485,1225,468,1225,1225,UTC; Mon–Fri (weekday); peak = 07:00–09:59 and 15:00–17:59; off-peak = all other minutes in the sample.
+W-B (2026-01-31 – 2026-02-07),offpeak,-0.05795408740680699,0.0660261109953091,0.03426661827063614,6144,2138,5506,5682,UTC; Mon–Fri (weekday); peak = 07:00–09:59 and 15:00–17:59; off-peak = all other minutes in the sample.
+W-C (2026-03-07 – 2026-03-14),peak,0.2051686172974407,-0.16828941675402231,0.1985181254582805,1080,361,1080,1080,UTC; Mon–Fri (weekday); peak = 07:00–09:59 and 15:00–17:59; off-peak = all other minutes in the sample.
+W-C (2026-03-07 – 2026-03-14),offpeak,0.039908982889688555,0.11943822516972832,0.014022912149691324,5555,1843,4960,5115,UTC; Mon–Fri (weekday); peak = 07:00–09:59 and 15:00–17:59; off-peak = all other minutes in the sample.
