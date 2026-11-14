@@ -15,7 +15,8 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from utils.s3_upload import save_parquet_to_s3
+from utils.callstats import CallStats
+from utils.s3_upload import raise_if_failed_saves, reset_failed_saves, save_parquet_to_s3
 
                                   
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -116,9 +117,15 @@ def extract_weather_measurements(data):
         return []
 
 
+CALLS = CallStats()  # successful and failed calls, printed at the end of every invocation
+
+
 def fetch_datex_data(feed_name, url):
+    name = f"vegvesen_{feed_name}"
+    started = time.time()
     if not USERNAME or not PASSWORD:
         print("Missing VEGVESEN_USER or VEGVESEN_PASS environment variables.")
+        CALLS.record(name, "failed", error="no credentials")
         return None
 
     try:
@@ -126,19 +133,26 @@ def fetch_datex_data(feed_name, url):
             USERNAME, PASSWORD), timeout=60)
         if response.status_code != 200:
             print(f"{feed_name} -> HTTP {response.status_code}")
+            CALLS.record(name, "failed", time.time() - started, f"HTTP {response.status_code}")
             return None
     except Exception as e:
         print(f"{feed_name} -> Connection error: {e}")
+        CALLS.record(name, "failed", time.time() - started, type(e).__name__)
         return None
 
-    data = xmltodict.parse(
-        response.text, process_namespaces=True, namespaces=NAMESPACES)
+    try:
+        data = xmltodict.parse(
+            response.text, process_namespaces=True, namespaces=NAMESPACES)
+    except Exception as e:
+        CALLS.record(name, "failed", time.time() - started, f"parse: {type(e).__name__}")
+        raise
 
     try:
         if feed_name == "traffic_situations":
             situations = extract_situations(data)
             if not situations:
                 print(f"{feed_name}: No situation records found.")
+                CALLS.record(name, "empty", time.time() - started)
                 return
             records = flatten_records(situations)
             df = pd.json_normalize(records, sep=".")
@@ -147,6 +161,7 @@ def fetch_datex_data(feed_name, url):
             measurements = extract_weather_measurements(data)
             if not measurements:
                 print(f"{feed_name}: No weather measurements found.")
+                CALLS.record(name, "empty", time.time() - started)
                 return
             df = pd.json_normalize(measurements, sep=".")
 
@@ -182,19 +197,34 @@ def fetch_datex_data(feed_name, url):
         save_parquet_to_s3(df, parquet_s3_key)
 
         print(f"{feed_name}: {len(df)} records saved to S3")
+        CALLS.record(name, "ok", time.time() - started)
     except Exception as e:
         print(f"{feed_name} -> Could not convert to parquet: {e}")
+        CALLS.record(name, "failed", time.time() - started, f"convert: {type(e).__name__}")
 
 
 def run_once():
     """One collection pass (weather_site_table is reference data, pulled separately)."""
-    fetch_datex_data("traffic_situations", FEEDS["traffic_situations"])
-    fetch_datex_data("travel_times", FEEDS["travel_times"])
-    fetch_datex_data("weather_data", FEEDS["weather_data"])
+    errors = []
+    for feed in ("traffic_situations", "travel_times", "weather_data"):
+        try:
+            fetch_datex_data(feed, FEEDS[feed])
+        except Exception as e:  # e.g. a truncated XML response; the other feeds must still be fetched
+            print(f"{feed} -> FAILED: {e}")
+            errors.append(feed)
+    if errors:
+        raise RuntimeError(f"feeds failed: {errors}")
 
 
 def lambda_handler(event, context):
-    run_once()
+    global CALLS
+    reset_failed_saves()
+    CALLS = CallStats()
+    try:
+        run_once()
+    finally:
+        CALLS.emit()
+        raise_if_failed_saves()
     return {"status": "ok"}
 
 

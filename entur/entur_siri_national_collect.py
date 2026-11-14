@@ -35,7 +35,8 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from utils.s3_upload import save_parquet_to_s3
+from utils.callstats import CallStats
+from utils.s3_upload import raise_if_failed_saves, reset_failed_saves, save_parquet_to_s3
 
 URL = "https://api.entur.io/realtime/v1/rest/et"
 HEADERS = {"ET-Client-Name": "entur-multimodal-analytics"}
@@ -43,6 +44,7 @@ HEADERS = {"ET-Client-Name": "entur-multimodal-analytics"}
 REQUESTOR_ID = os.getenv("SIRI_REQUESTOR_ID", "b8a4f8d8-5d7e-4c3a-9a31-3d0a6f0f8e10")
 MAX_SIZE = 1500
 MAX_PAGES = 8
+PASS_BUDGET_S = 90  # stop asking for pages after this long; the Lambda timeout is 120 s
 FULL_SNAPSHOT_JOURNEYS = 3000  # a pass with at least this many journeys is the whole set, not a delta
 
 _NS = "{http://www.siri.org.uk/siri}"
@@ -54,7 +56,18 @@ def _text(el, tag):
 
 
 def _epoch(value):
-    return int(datetime.fromisoformat(value).timestamp()) if value else None
+    """Unix seconds of an ISO 8601 time, None if absent or malformed (one bad value must not lose a whole pass)."""
+    try:
+        return int(datetime.fromisoformat(value).timestamp()) if value else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _int(value):
+    try:
+        return int(value) if value else None
+    except ValueError:
+        return None
 
 
 def _bool(value):
@@ -69,7 +82,7 @@ def _call(call_el, call_type):
     dep = act_dep if act_dep is not None else exp_dep
     return {
         "call_type": call_type,
-        "order": int(_text(call_el, "Order") or 0),
+        "order": _int(_text(call_el, "Order")),
         "stop_point_ref": _text(call_el, "StopPointRef"),
         "stop_point_name": _text(call_el, "StopPointName"),
         "aimed_arrival": aimed_arr, "expected_arrival": exp_arr, "actual_arrival": act_arr,
@@ -80,7 +93,7 @@ def _call(call_el, call_type):
         "departure_status": _text(call_el, "DepartureStatus"),
         "cancellation": _bool(_text(call_el, "Cancellation")),
         "destination_display": _text(call_el, "DestinationDisplay"),
-        "visit_number": int(_text(call_el, "VisitNumber")) if _text(call_el, "VisitNumber") else None,
+        "visit_number": _int(_text(call_el, "VisitNumber")),
     }
 
 
@@ -96,62 +109,85 @@ def _journey_id(journey):
     return None, None, None
 
 
-def parse_page(content: bytes, journeys: dict) -> int:
-    """Add the journeys of one page to `journeys` {key: (journey row, [call rows])}; returns rows seen."""
+def parse_page(content: bytes, journeys: dict, errors: list | None = None) -> int:
+    """
+    Add the journeys of one page to `journeys` {key: (journey row, [call rows])}; returns rows seen.
+    A journey that cannot be read is skipped and described in `errors`; the rest of the page is kept.
+    """
     seen = 0
     for _, el in ET.iterparse(io.BytesIO(content), events=("end",)):
         if el.tag != _NS + "EstimatedVehicleJourney":
             continue
         seen += 1
-        trip_id, frame, how = _journey_id(el)
-        if trip_id:
-            datasource = _text(el, "DataSource")
-            recorded = _epoch(_text(el, "RecordedAtTime"))
-            key = (datasource, trip_id, frame)
-            known = journeys.get(key)
-            if known is None or (recorded or 0) >= (known[0]["recorded_at"] or 0):
-                calls = [_call(c, "recorded") for c in el.findall(f"{_NS}RecordedCalls/{_NS}RecordedCall")]
-                calls += [_call(c, "estimated") for c in el.findall(f"{_NS}EstimatedCalls/{_NS}EstimatedCall")]
-                journeys[key] = ({
-                    "datasource": datasource, "trip_id": trip_id, "id_kind": how, "data_frame_ref": frame,
-                    "line_ref": _text(el, "LineRef"), "published_line_name": _text(el, "PublishedLineName"),
-                    "direction_ref": _text(el, "DirectionRef"), "operator_ref": _text(el, "OperatorRef"),
-                    "vehicle_ref": _text(el, "VehicleRef"), "vehicle_mode": _text(el, "VehicleMode"),
-                    "origin_name": _text(el, "OriginName"), "destination_name": _text(el, "DestinationName"),
-                    "monitored": _bool(_text(el, "Monitored")), "cancellation": _bool(_text(el, "Cancellation")),
-                    "extra_journey": _bool(_text(el, "ExtraJourney")),
-                    "is_complete_stop_sequence": _bool(_text(el, "IsCompleteStopSequence")),
-                    "prediction_inaccurate": _bool(_text(el, "PredictionInaccurate")),
-                    "occupancy": _text(el, "Occupancy"), "recorded_at": recorded,
-                    "n_recorded": sum(1 for c in calls if c["call_type"] == "recorded"),
-                    "n_estimated": sum(1 for c in calls if c["call_type"] == "estimated"),
-                }, calls)
+        try:
+            _add_journey(el, journeys)
+        except Exception as e:
+            if errors is not None:
+                errors.append(f"{type(e).__name__}: {e}")
         el.clear()
     return seen
 
 
-def fetch_pass(requestor_id: str = REQUESTOR_ID):
+def _add_journey(el, journeys: dict) -> None:
+    trip_id, frame, how = _journey_id(el)
+    if not trip_id:
+        raise ValueError(f"journey without an id (LineRef {_text(el, 'LineRef')})")
+    datasource = _text(el, "DataSource")
+    recorded = _epoch(_text(el, "RecordedAtTime"))
+    key = (datasource, trip_id, frame)
+    known = journeys.get(key)
+    if known is None or (recorded or 0) >= (known[0]["recorded_at"] or 0):
+        calls = [_call(c, "recorded") for c in el.findall(f"{_NS}RecordedCalls/{_NS}RecordedCall")]
+        calls += [_call(c, "estimated") for c in el.findall(f"{_NS}EstimatedCalls/{_NS}EstimatedCall")]
+        journeys[key] = ({
+            "datasource": datasource, "trip_id": trip_id, "id_kind": how, "data_frame_ref": frame,
+            "line_ref": _text(el, "LineRef"), "published_line_name": _text(el, "PublishedLineName"),
+            "direction_ref": _text(el, "DirectionRef"), "operator_ref": _text(el, "OperatorRef"),
+            "vehicle_ref": _text(el, "VehicleRef"), "vehicle_mode": _text(el, "VehicleMode"),
+            "origin_name": _text(el, "OriginName"), "destination_name": _text(el, "DestinationName"),
+            "monitored": _bool(_text(el, "Monitored")), "cancellation": _bool(_text(el, "Cancellation")),
+            "extra_journey": _bool(_text(el, "ExtraJourney")),
+            "is_complete_stop_sequence": _bool(_text(el, "IsCompleteStopSequence")),
+            "prediction_inaccurate": _bool(_text(el, "PredictionInaccurate")),
+            "occupancy": _text(el, "Occupancy"), "recorded_at": recorded,
+            "n_recorded": sum(1 for c in calls if c["call_type"] == "recorded"),
+            "n_estimated": sum(1 for c in calls if c["call_type"] == "estimated"),
+        }, calls)
+
+
+CALLS = CallStats()  # successful and failed calls, printed at the end of every invocation
+
+
+def fetch_pass(requestor_id: str = REQUESTOR_ID, errors: list | None = None):
     """All pages of one pass. Returns (journeys {key: (row, calls)}, pages, rows_seen, complete)."""
     journeys, pages, rows = {}, 0, 0
+    deadline = time.monotonic() + PASS_BUDGET_S
     while pages < MAX_PAGES:
+        if pages and time.monotonic() > deadline:
+            print(f"siri national: out of time after {pages} page(s), keeping what was fetched")
+            return journeys, pages, rows, False
+        started = time.time()
         try:
             response = requests.get(URL, params={"maxSize": MAX_SIZE, "requestorId": requestor_id},
                                     headers=HEADERS, timeout=60)
         except Exception as e:
             print(f"siri national page {pages + 1} -> connection error: {e}")
+            CALLS.record("entur_siri_page", "failed", time.time() - started, type(e).__name__)
             return journeys, pages, rows, False
         if response.status_code != 200:
             print(f"siri national page {pages + 1} -> HTTP {response.status_code}")
+            CALLS.record("entur_siri_page", "failed", time.time() - started, f"HTTP {response.status_code}")
             return journeys, pages, rows, False
+        CALLS.record("entur_siri_page", "ok", time.time() - started)
         pages += 1
-        rows += parse_page(response.content, journeys)
+        rows += parse_page(response.content, journeys, errors)
         if b"<MoreData>true" not in response.content:
             return journeys, pages, rows, True
     print(f"siri national: still MoreData after {MAX_PAGES} pages, stopping")
     return journeys, pages, rows, False
 
 
-def to_frames(journeys: dict, fetched_at: int, pages: int, rows: int, complete: bool):
+def to_frames(journeys: dict, fetched_at: int, pages: int, rows: int, complete: bool, skipped: int = 0):
     jrows, crows = [], []
     for (datasource, trip_id, frame), (jrow, calls) in journeys.items():
         jrow = {**jrow, "fetched_at": fetched_at}
@@ -161,24 +197,41 @@ def to_frames(journeys: dict, fetched_at: int, pages: int, rows: int, complete: 
                           "journey_recorded_at": jrow["recorded_at"], "fetched_at": fetched_at, **c})
     jdf, cdf = pd.DataFrame(jrows), pd.DataFrame(crows)
     for df in (jdf, cdf):
+        if df.empty:
+            continue
         df["pass_pages"], df["pass_rows"], df["pass_complete"] = pages, rows, complete
+        df["pass_skipped"] = skipped  # journeys that could not be parsed in this pass
         df["full_snapshot"] = rows >= FULL_SNAPSHOT_JOURNEYS
     return jdf, cdf
 
 
 def collect() -> dict:
+    global CALLS
+    reset_failed_saves()
+    CALLS = CallStats()
     started = time.time()
     fetched_at = int(started)
-    journeys, pages, rows, complete = fetch_pass()
+    errors: list = []
+    journeys, pages, rows, complete = fetch_pass(errors=errors)
+    # journeys are counted next to the page calls: parsed (ok) and not parseable (failed)
+    CALLS.record("entur_siri_journeys", "ok", count=len(journeys))
+    if errors:
+        CALLS.record("entur_siri_journeys", "failed", error=errors[0][:60], count=len(errors))
+    CALLS.emit()
+    if errors:
+        print(f"siri national: {len(errors)} journey(s) skipped, first: {errors[0]}")
     if not journeys:
         print("siri national: nothing collected")
+        raise_if_failed_saves()
         return {"journeys": 0, "pages": pages}
-    jdf, cdf = to_frames(journeys, fetched_at, pages, rows, complete)
+    jdf, cdf = to_frames(journeys, fetched_at, pages, rows, complete, len(errors))
     today, stamp = datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%H%M%S")
     save_parquet_to_s3(jdf, f"entur_siri_national/{today}/journeys_{stamp}.parquet")
-    save_parquet_to_s3(cdf, f"entur_siri_national/{today}/calls_{stamp}.parquet")
+    if not cdf.empty:  # an empty frame has no columns and would break readers that combine files by name
+        save_parquet_to_s3(cdf, f"entur_siri_national/{today}/calls_{stamp}.parquet")
     print(f"siri national: {pages} page(s), {rows} rows -> {len(jdf)} journeys, {len(cdf)} calls "
           f"({'full' if rows >= FULL_SNAPSHOT_JOURNEYS else 'delta'}{'' if complete else ', INCOMPLETE'}), {time.time() - started:.1f}s")
+    raise_if_failed_saves()
     return {"journeys": len(jdf), "calls": len(cdf), "pages": pages}
 
 

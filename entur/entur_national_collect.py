@@ -33,7 +33,8 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from utils.s3_upload import save_parquet_to_s3
+from utils.callstats import CallStats
+from utils.s3_upload import raise_if_failed_saves, reset_failed_saves, save_parquet_to_s3
 
 GTFS_RT_URL = "https://api.entur.io/realtime/v1/gtfs-rt"
 HEADERS = {"ET-Client-Name": "entur-multimodal-analytics"}
@@ -134,18 +135,26 @@ def decode_alerts(feed, now: int | None = None) -> pd.DataFrame:
     return df
 
 
+CALLS = CallStats()  # successful and failed calls, printed at the end of every invocation
+
+
 def fetch_feed(feed_type: str):
-    """GET one national GTFS-RT feed; None on any failure."""
+    """GET one national GTFS-RT feed; None on any failure (recorded in CALLS)."""
+    name = f"entur_{feed_type.replace('-', '_')}"
+    started = time.time()
     try:
         response = requests.get(f"{GTFS_RT_URL}/{feed_type}", headers=HEADERS, timeout=30)
         if response.status_code != 200:
             print(f"national {feed_type} -> HTTP {response.status_code}")
+            CALLS.record(name, "failed", time.time() - started, f"HTTP {response.status_code}")
             return None
     except Exception as e:
         print(f"national {feed_type} -> connection error: {e}")
+        CALLS.record(name, "failed", time.time() - started, type(e).__name__)
         return None
     feed = gtfs_realtime_pb2.FeedMessage()
     feed.ParseFromString(response.content)
+    CALLS.record(name, "ok", time.time() - started)
     return feed
 
 
@@ -157,6 +166,7 @@ def collect(feed_type: str) -> int:
     df = decode_vehicle_positions(feed) if feed_type == "vehicle-positions" else decode_alerts(feed)
     if df.empty:
         print(f"national {feed_type}: no rows")
+        CALLS.record(f"entur_{feed_type.replace('-', '_')}_rows", "empty")
         return 0
     today = datetime.now().strftime("%Y-%m-%d")
     stamp = datetime.now().strftime("%H%M%S")
@@ -167,6 +177,9 @@ def collect(feed_type: str) -> int:
 
 def lambda_handler(event, context):
     """Invoked every minute: alerts every 5th minute, vehicle positions POLLS_PER_MINUTE times."""
+    global CALLS
+    reset_failed_saves()
+    CALLS = CallStats()
     start = time.monotonic()
     if datetime.now().minute % ALERTS_EVERY_MIN == 0:
         try:
@@ -181,6 +194,8 @@ def lambda_handler(event, context):
             collect("vehicle-positions")
         except Exception as e:  # one failed poll must not skip the next one
             print(f"national vehicle-positions poll {i} failed: {e}")
+    CALLS.emit()
+    raise_if_failed_saves()
     return {"status": "ok"}
 
 

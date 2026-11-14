@@ -13,7 +13,8 @@ PROJECT_ROOT_PATH = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT_PATH not in sys.path:
     sys.path.insert(0, PROJECT_ROOT_PATH)
 
-from utils.s3_upload import save_parquet_to_s3
+from utils.callstats import CallStats
+from utils.s3_upload import raise_if_failed_saves, reset_failed_saves, save_parquet_to_s3
 
                                   
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -35,18 +36,21 @@ CLIENT_IDENTIFIER = os.getenv("BYSYKKEL_CLIENT", "traffic-citymonitor")
 def fetch_gbfs_data(feed_name, url):
     """Fetch a GBFS feed and store as JSON + Parquet."""
     headers = {"Client-Identifier": CLIENT_IDENTIFIER}
+    name = f"bysykkel_{feed_name}"
+    started = time.time()
     try:
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
             print(f"{feed_name} -> HTTP {response.status_code}")
+            CALLS.record(name, "failed", time.time() - started, f"HTTP {response.status_code}")
             return
     except Exception as e:
         print(f"{feed_name} -> Connection error: {e}")
+        CALLS.record(name, "failed", time.time() - started, type(e).__name__)
         return
 
-    data = response.json()
-
     try:
+        data = response.json()  # inside the try: a malformed body must not abort the other polls of this invocation
                                                                     
         if "stations" in data.get("data", {}):
             df = pd.json_normalize(data["data"]["stations"])
@@ -65,8 +69,10 @@ def fetch_gbfs_data(feed_name, url):
         save_parquet_to_s3(df, parquet_s3_key)
 
         print(f"{feed_name}: {len(df)} records saved to S3")
+        CALLS.record(name, "ok", time.time() - started)
     except Exception as e:
         print(f"{feed_name} -> Could not convert to parquet: {e}")
+        CALLS.record(name, "failed", time.time() - started, f"parse: {type(e).__name__}")
 
 
 def run_once():
@@ -80,8 +86,14 @@ STATUS_CALLS_PER_INVOCATION = 4  # invoked once a minute -> 4 x 15 s
 STATIC_FEEDS_EVERY_MIN = 10  # station_information / system_information rarely change
 
 
+CALLS = CallStats()
+
+
 def lambda_handler(event, context):
     """Invoked every minute: station_status every 15 s, static feeds every 10 min."""
+    global CALLS
+    reset_failed_saves()
+    CALLS = CallStats()
     start = time.monotonic()
     if datetime.now().minute % STATIC_FEEDS_EVERY_MIN == 0:
         fetch_gbfs_data("system_information", ENDPOINTS["system_information"])
@@ -91,6 +103,8 @@ def lambda_handler(event, context):
         if wait > 0:
             time.sleep(wait)
         fetch_gbfs_data("station_status", ENDPOINTS["station_status"])
+    CALLS.emit()
+    raise_if_failed_saves()
     return {"status": "ok"}
 
 

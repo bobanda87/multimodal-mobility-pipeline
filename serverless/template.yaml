@@ -19,6 +19,19 @@ Parameters:
   VegvesenPass:
     Type: String
     NoEcho: true
+  AlertWebhookUrl:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Where the data monitor sends its alerts (Slack, Teams, Discord or ntfy webhook); empty logs them only
+  AlertKind:
+    Type: String
+    Default: generic
+    AllowedValues: [generic, slack, teams, discord, ntfy]
+  MonitorMute:
+    Type: String
+    Default: ""
+    Description: Comma separated monitor check names to skip, e.g. when a collector is switched off on purpose
   # Schedules are created DISABLED so you can test-invoke first; redeploy with ENABLED to start collecting.
   ScheduleState:
     Type: String
@@ -46,7 +59,7 @@ Resources:
     Properties:
       Handler: avinor.avinor_collect.lambda_handler
       Timeout: 170
-      MemorySize: 1024
+      MemorySize: 512
       LoggingConfig:
         LogGroup: !Ref AvinorLogGroup
       Policies:
@@ -61,7 +74,7 @@ Resources:
   AvinorLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      RetentionInDays: 7
+      RetentionInDays: 90
 
   EnturFunction:
     Type: AWS::Serverless::Function
@@ -85,7 +98,7 @@ Resources:
   EnturLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      RetentionInDays: 7
+      RetentionInDays: 90
 
   OsloBysykkelFunction:
     Type: AWS::Serverless::Function
@@ -109,7 +122,7 @@ Resources:
   OsloBysykkelLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      RetentionInDays: 7
+      RetentionInDays: 90
 
   EnturNationalFunction:
     Type: AWS::Serverless::Function
@@ -133,7 +146,7 @@ Resources:
   EnturNationalLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      RetentionInDays: 7
+      RetentionInDays: 90
 
   EnturSiriNationalFunction:
     Type: AWS::Serverless::Function
@@ -157,7 +170,37 @@ Resources:
   EnturSiriNationalLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      RetentionInDays: 7
+      RetentionInDays: 90
+
+  DataMonitorFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      Handler: monitor.handler.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          S3_JSON_PATH: data/json
+          ALERT_WEBHOOK_URL: !Ref AlertWebhookUrl
+          ALERT_KIND: !Ref AlertKind
+          MONITOR_MUTE: !Ref MonitorMute
+      LoggingConfig:
+        LogGroup: !Ref DataMonitorLogGroup
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref BucketName
+      Events:
+        Schedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 minute)
+            State: !Ref ScheduleState
+  DataMonitorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
 
   VegvesenFunction:
     Type: AWS::Serverless::Function
@@ -185,8 +228,8 @@ Resources:
   VegvesenLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      RetentionInDays: 7
+      RetentionInDays: 90
 
 Outputs:
   Functions:
-    Value: !Sub "${AvinorFunction}, ${EnturFunction}, ${EnturNationalFunction}, ${EnturSiriNationalFunction}, ${OsloBysykkelFunction}, ${VegvesenFunction}"
+    Value: !Sub "${AvinorFunction}, ${EnturFunction}, ${EnturNationalFunction}, ${EnturSiriNationalFunction}, ${DataMonitorFunction}, ${OsloBysykkelFunction}, ${VegvesenFunction}"
