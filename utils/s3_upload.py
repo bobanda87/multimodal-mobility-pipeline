@@ -165,7 +165,7 @@ def upload_parquet_to_s3(local_file_path: str, relative_path: str = None) -> boo
     return upload_to_s3(local_file_path, relative_path, file_type="parquet")
 
 
-def save_json_to_s3(data: dict | list, s3_key: str) -> bool:
+def _save_json_to_s3(data: dict | list, s3_key: str) -> bool:
     """
     Save JSON data directly to S3 without creating a local file.
 
@@ -207,7 +207,7 @@ def save_json_to_s3(data: dict | list, s3_key: str) -> bool:
         return False
 
 
-def save_parquet_to_s3(df, s3_key: str) -> bool:
+def _save_parquet_to_s3(df, s3_key: str) -> bool:
     """
     Save DataFrame directly to S3 as Parquet without creating a local file.
 
@@ -466,3 +466,38 @@ def mark_files_as_normalized(source: str, file_keys: list[str]) -> bool:
     
                      
     return save_json_to_s3(tracking_data, "normalization_tracking.json")
+
+
+# ---- failed uploads are counted, so a Lambda invocation can fail loudly instead of looking successful ----
+# The _save_* functions above swallow every error and return False. The collectors used to ignore that
+# result, so a failed upload (throttling, expired credentials, permissions) produced a "successful"
+# invocation and silently lost the data. Handlers call reset_failed_saves() first and
+# raise_if_failed_saves() last. Callers that just want the old behaviour keep getting True/False.
+FAILED_SAVES: list[str] = []
+
+
+def save_parquet_to_s3(df, s3_key: str) -> bool:
+    """Save a DataFrame as Parquet (see _save_parquet_to_s3); a failure is also recorded in FAILED_SAVES."""
+    ok = _save_parquet_to_s3(df, s3_key)
+    if not ok:
+        FAILED_SAVES.append(s3_key)
+    return ok
+
+
+def save_json_to_s3(data: dict | list, s3_key: str) -> bool:
+    """Save JSON (see _save_json_to_s3); a failure is also recorded in FAILED_SAVES."""
+    ok = _save_json_to_s3(data, s3_key)
+    if not ok:
+        FAILED_SAVES.append(s3_key)
+    return ok
+
+
+def reset_failed_saves() -> None:
+    FAILED_SAVES.clear()
+
+
+def raise_if_failed_saves() -> None:
+    """Raise if any upload since reset_failed_saves() failed, after every item has been attempted."""
+    if FAILED_SAVES:
+        failed = list(FAILED_SAVES)
+        raise RuntimeError(f"{len(failed)} S3 upload(s) failed, e.g. {failed[:3]}")

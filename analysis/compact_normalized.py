@@ -18,6 +18,7 @@ A group with a single file is left alone, which makes both modes idempotent.
   PYTHONPATH=. .venv/bin/python analysis/compact_normalized.py --start-date 2026-03-01 --end-date 2026-03-31
 """
 import argparse
+import io
 import os
 import re
 import sys
@@ -190,6 +191,68 @@ def list_siri_hourly_groups(now: datetime, lookback_hours: int, grace_minutes: i
     return {k: [key for _, key in sorted(v)] for k, v in groups.items()}
 
 
+def merge_parquet(blobs: list[bytes]) -> tuple[bytes, int]:
+    """
+    Merge Parquet files into one, one input at a time, so memory stays near the size of one file.
+
+    The previous merge (polars concat, unique, then pandas for the upload) needed the whole hour as Python
+    objects and used 2036 of the Lambda's 2048 MB for a quiet night hour. Here each input becomes one row
+    group of the output. Columns missing from a file are filled with nulls and differing types are promoted
+    (e.g. int64 and float64 to float64). Rows are not deduplicated: passes carry their own fetched_at, so
+    no two rows of these tables are identical unless a pass was written twice, which the hour naming prevents.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    schema = pa.unify_schemas([pq.read_schema(io.BytesIO(b)) for b in blobs], promote_options="permissive")
+    out, rows = io.BytesIO(), 0
+    with pq.ParquetWriter(out, schema) as writer:
+        for blob in blobs:
+            table = pq.read_table(io.BytesIO(blob))
+            columns = [table[name].cast(field.type) if name in table.column_names else pa.nulls(len(table), type=field.type)
+                       for name, field in zip(schema.names, schema)]
+            writer.write_table(pa.Table.from_arrays(columns, schema=schema))
+            rows += len(table)
+    return out.getvalue(), rows
+
+
+def _parquet_rows(blob: bytes) -> int:
+    import pyarrow.parquet as pq
+    return pq.ParquetFile(io.BytesIO(blob)).metadata.num_rows
+
+
+def compact_streaming(label: str, keys: list[str], out_key: str, dry_run: bool) -> str:
+    """Merge the per-pass files of one hour into out_key (a key relative to S3_PARQUET_PATH), then delete them."""
+    base = s3_upload.S3_PARQUET_PATH.rstrip("/")
+    full_key = f"{base}/{out_key}".replace("//", "/")
+    read_keys = keys + [full_key] if _exists(full_key) else keys  # an interrupted pass of the same hour left it
+    blobs = []
+    for key in read_keys:
+        try:
+            blobs.append(s3_upload.s3_client.get_object(Bucket=s3_upload.S3_BUCKET_NAME, Key=key)["Body"].read())
+        except Exception as e:
+            return f"skipped: could not read {key.split('/')[-1]}: {e}"
+    rows_in = sum(_parquet_rows(b) for b in blobs)
+    if dry_run:
+        return f"[dry-run] {len(keys)} files, {rows_in} rows"
+    merged, rows = merge_parquet(blobs)
+    del blobs
+    try:
+        s3_upload.s3_client.put_object(Bucket=s3_upload.S3_BUCKET_NAME, Key=full_key, Body=merged,
+                                       ContentType="application/octet-stream")
+        stored = s3_upload.s3_client.get_object(Bucket=s3_upload.S3_BUCKET_NAME, Key=full_key)["Body"].read()
+    except Exception as e:
+        s3_upload.FAILED_SAVES.append(out_key)
+        return f"kept inputs: upload of {out_key} failed: {e}"
+    if rows != rows_in or _parquet_rows(stored) != rows:
+        return f"kept inputs: verification of {out_key} failed ({rows_in} in, {rows} merged, {_parquet_rows(stored)} stored)"
+    s3_upload.s3_client.delete_objects(
+        Bucket=s3_upload.S3_BUCKET_NAME,
+        Delete={"Objects": [{"Key": k} for k in keys if k != full_key]},
+    )
+    return f"{len(keys)} files, {rows} rows"
+
+
 def run_siri_hourly(dry_run: bool = False, lookback_hours: int = 26, grace_minutes: int = 10,
                     now: datetime | None = None) -> None:
     """Merge the per-pass files of each closed UTC hour: <kind>_<HH>0000c.parquet (HH = the UTC hour)."""
@@ -200,7 +263,7 @@ def run_siri_hourly(dry_run: bool = False, lookback_hours: int = 26, grace_minut
         if len(keys) < 2:
             continue
         out_key = f"entur_siri_national/{day}/{kind}_{hour:%H}0000c.parquet"
-        print(f"{hour:%Y-%m-%d %H}:00Z siri_{kind:9} {compact(f'siri_{kind}', day, keys, dry_run, out_key=out_key)}", flush=True)
+        print(f"{hour:%Y-%m-%d %H}:00Z siri_{kind:9} {compact_streaming(f'siri_{kind}', keys, out_key, dry_run)}", flush=True)
 
 
 def run(start_date: str | None = None, end_date: str | None = None, min_age_days: int = 2,

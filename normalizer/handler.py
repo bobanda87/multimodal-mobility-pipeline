@@ -5,7 +5,7 @@ import time
 from botocore.exceptions import ClientError
 
 from analysis import compact_normalized, normalize_data
-from utils.s3_upload import S3_BUCKET_NAME, S3_JSON_PATH, s3_client
+from utils.s3_upload import S3_BUCKET_NAME, S3_JSON_PATH, raise_if_failed_saves, reset_failed_saves, s3_client
 
 _LOCK_HELD = ("PreconditionFailed", "ConditionalRequestConflict")
 
@@ -49,10 +49,12 @@ def _run_locked(name: str, context, task) -> dict:
     if not acquire_lock(name, ttl):
         print(f"{name}: another run is in progress, skipping")
         return {"status": "skipped"}
+    reset_failed_saves()
     try:
         task()
     finally:
         release_lock(name)
+    raise_if_failed_saves()  # an upload that failed must not look like a successful run
     return {"status": "ok"}
 
 

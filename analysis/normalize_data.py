@@ -1026,7 +1026,10 @@ def run_normalization(
 
                                                                       
                     df_pandas = combined_df.to_pandas()
-                    _save(df_pandas, parquet_s3_key)
+                    if not _save(df_pandas, parquet_s3_key):
+                        # not written: these raw files must stay un-normalized, so the watermark cannot pass them
+                        failed_keys.update(newly_normalized)
+                        newly_normalized = []
 
                                                                          
                     if newly_normalized:
@@ -1166,7 +1169,9 @@ def run_normalization(
                                 f"  Entur SIRI ET {date_str}: deduplicated {n_before_et} -> {n_after_et} unique trips (by {dedup_cols})")
                         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
                         parquet_s3_key = f"normalized/{date_str}/entur_siri_et_normalized_{timestamp}.parquet"
-                        _save(combined_df.to_pandas(), parquet_s3_key)
+                        if not _save(combined_df.to_pandas(), parquet_s3_key):
+                            failed_keys.update(newly_normalized)
+                            newly_normalized = []
                         all_newly_normalized.extend(newly_normalized)
                         msg = f"  ✓ {date_str}: entur_siri_et -> {parquet_s3_key} ({combined_df.height} trip-delay records)"
                         if raw_total > 0:
