@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Incremental normalization (watermark based) and daily compaction of the normalized Parquet files, as scheduled Lambda container functions.
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: phdprojectdata
+  ParquetPath:
+    Type: String
+    Default: data/parquet
+  JsonPath:
+    Type: String
+    Default: data/json
+    Description: Where normalization_watermark.json lives
+  NormalizeSchedule:
+    Type: String
+    Default: rate(15 minutes)
+    Description: How often new raw files are normalized; this is the extra delay before they reach the API
+  # Schedules are created DISABLED; run the migration (analysis/migrate_tracking_to_watermark.py) and test first.
+  ScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+
+Globals:
+  Function:
+    Architectures: [arm64]
+    Environment:
+      Variables:
+        S3_BUCKET_NAME: !Ref BucketName
+        S3_PARQUET_PATH: !Ref ParquetPath
+        S3_JSON_PATH: !Ref JsonPath
+        # Raw object keys use the collectors' local date (they run with this zone)
+        TZ: Europe/Oslo
+
+Resources:
+  NormalizeFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: normalizer/Dockerfile
+      DockerContext: ..
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["normalizer.handler.normalize_handler"]
+      Timeout: 900
+      MemorySize: 3008
+      # One run at a time: two overlapping runs would normalize the same raw files twice
+      ReservedConcurrentExecutions: 1
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref BucketName
+      Events:
+        Schedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: !Ref NormalizeSchedule
+            State: !Ref ScheduleState
+
+  CompactFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: normalizer/Dockerfile
+      DockerContext: ..
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["normalizer.handler.compact_handler"]
+      Timeout: 900
+      MemorySize: 6144
+      ReservedConcurrentExecutions: 1
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref BucketName
+      Events:
+        Schedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(30 3 * * ? *)
+            ScheduleExpressionTimezone: Europe/Oslo
+            State: !Ref ScheduleState
+
+  NormalizeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${NormalizeFunction}"
+      RetentionInDays: 7
+  CompactLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${CompactFunction}"
+      RetentionInDays: 7

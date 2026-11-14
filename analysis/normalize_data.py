@@ -11,9 +11,8 @@ from utils.s3_upload import (
     save_parquet_to_s3,
     list_parquet_files_from_s3,
     read_parquet_from_s3,
-    load_normalized_files,
-    mark_files_as_normalized
 )
+from utils.normalization_state import Watermarks
 
                                                                                         
 try:
@@ -29,7 +28,7 @@ from glob import glob
 import re
 import polars as pl
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def get_latest_parquet(data_dir, pattern="*.parquet"):
@@ -715,6 +714,34 @@ NORMALIZERS = {
 }
 
 
+# Raw files that feed each normalized source: (raw source folder on S3, file name pattern).
+RAW_SPECS = {
+    "avinor": [("avinor", "*.parquet")],
+    "oslobysykkel": [("oslobysykkel", "*station_status*.parquet")],
+    "vegvesen": [("vegvesen", "*weather_data*.parquet")],
+    "vegvesen_travel_times": [("vegvesen", "*travel_times*.parquet")],
+    "vegvesen_traffic_situations": [("vegvesen", "*traffic_situations*.parquet")],
+    "entur_siri_et": [("entur", "*_siri_et_*.parquet"), ("entur", "*trip-updates*.parquet")],
+}
+
+
+def list_raw_files(source: str, date_prefix: str | None = None) -> list[dict]:
+    """Raw files ({'key', 'last_modified'}) of one normalized source, oldest first."""
+    seen, files = set(), []
+    for raw_source, pattern in RAW_SPECS[source]:
+        for f in get_all_parquet_files_from_s3(raw_source, pattern, with_metadata=True, date_prefix=date_prefix):
+            if f["key"] not in seen:
+                seen.add(f["key"])
+                files.append(f)
+    return sorted(files, key=lambda f: (f["last_modified"], f["key"]))
+
+
+def _attempted(files: list[dict], files_by_date: dict, dates: list[str]) -> list[dict]:
+    """The raw files of `files` that belong to the dates processed in this run."""
+    keys = {k for d in dates for k in files_by_date[d]}
+    return [f for f in files if f["key"] in keys]
+
+
 def _filter_dates_to_interval(sorted_dates: list[str], start_date: str | None, end_date: str | None) -> list[str]:
     """Keep only dates in [start_date, end_date] (inclusive)."""
     if start_date is not None:
@@ -730,16 +757,21 @@ def run_normalization(
     end_date: str | None = None,
     re_run_all: bool = False,
     only_entur_delays: bool = False,
+    dry_run: bool = False,
 ):
     """Run normalization for all available data sources from S3.
 
     Args:
-        only_today: If True and no interval given, process only files from today. If False and no interval, process all dates.
+        only_today: If True and no interval given, process the raw files newer than each source's watermark
+            (listing only the date folders since then). If False and no interval, list all dates (still only
+            files newer than the watermark).
         start_date: Start of interval (YYYY-MM-DD). If set, only dates >= start_date are processed.
         end_date: End of interval (YYYY-MM-DD). If set, only dates <= end_date are processed.
-        When start_date or end_date is set, only_today is ignored and files are listed for the whole source, then filtered by this interval.
-        re_run_all: If True, process all raw files (ignore tracking list). Use for full re-normalization from scratch.
+        When start_date or end_date is set, only_today is ignored and files are listed for the whole source, then
+        filtered by this interval. The watermark is not advanced in this mode (backfill).
+        re_run_all: If True, process all raw files regardless of the watermark (full re-normalization).
         only_entur_delays: If True, skip avinor/oslo/vegvesen and only run Entur SIRI ET + trip-updates normalization.
+        dry_run: Read and normalize but write nothing (no Parquet, no watermark).
     """
     print("Starting normalization process...\n")
     print("Reading files from S3 bucket...\n")
@@ -753,7 +785,44 @@ def run_normalization(
         date_prefix = today_str
         print(f"Processing only files from today: {today_str}\n")
     if re_run_all:
-        print("Re-run all: ignoring normalized tracking – processing all raw files.\n")
+        print("Re-run all: ignoring the watermark – processing all raw files.\n")
+
+    wms = Watermarks()
+    yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def _is_new(source, file_info):
+        return re_run_all or wms.is_new(source, file_info)
+
+    def _raw_for_run(source):
+        """Raw files for this run: all of them, or (default) the date folders since the watermark."""
+        if start_date and end_date:
+            first = datetime.strptime(start_date, "%Y-%m-%d").date()
+            last = datetime.strptime(end_date, "%Y-%m-%d").date()
+            files = []
+            for i in range((last - first).days + 1):
+                files += list_raw_files(source, (first + timedelta(days=i)).isoformat())
+            return files
+        if use_interval or not only_today:
+            return list_raw_files(source)
+        wm = wms.last_modified(source)
+        today = datetime.now().date()
+        first = (wm - timedelta(days=1)).date() if wm else today
+        files = []
+        for i in range((today - first).days + 1):
+            files += list_raw_files(source, (first + timedelta(days=i)).isoformat())
+        return files
+
+    def _save(df, key):
+        if dry_run:
+            print(f"  [dry-run] would write {key} ({len(df)} rows)")
+            return True
+        return save_parquet_to_s3(df, key)
+
+    def _advance(source, attempted, failed_keys):
+        if dry_run or use_interval:
+            return
+        wms.advance(source, attempted, failed_keys)
+
 
                                                                                                                
                                                                                                           
@@ -766,27 +835,24 @@ def run_normalization(
 
     if not only_entur_delays:
         for source in sources:
-                                                  
-            station_capacity = None                               
-            if source == "oslobysykkel":
-                                                                     
-                parquet_files_metadata = get_all_parquet_files_from_s3(
-                    source, "*station_status*.parquet", with_metadata=True,
-                    date_prefix=date_prefix)
+            parquet_files_metadata = _raw_for_run(source)
 
-                                                                      
+            station_capacity = None
+            if source == "oslobysykkel":
                 station_capacity = {}
                 info_files = get_all_parquet_files_from_s3(
                     source, "*station_information*.parquet",
                     date_prefix=date_prefix)
+                if not info_files and only_today and not use_interval:
+                    info_files = get_all_parquet_files_from_s3(
+                        source, "*station_information*.parquet",
+                        date_prefix=yesterday_str)
                 if info_files:
-                                                                                                            
                     latest_info_key = info_files[-1]
                     try:
                         info_df = read_parquet_from_s3(latest_info_key)
                         if info_df is not None and ("station_id" in info_df.columns and
                                                     "capacity" in info_df.columns):
-                                                                    
                             for row in info_df.iter_rows(named=True):
                                 station_capacity[row["station_id"]] = (
                                     row["capacity"])
@@ -799,33 +865,13 @@ def run_normalization(
                         station_capacity = None
                 else:
                     station_capacity = None
-            elif source == "vegvesen":
-                parquet_files_metadata = get_all_parquet_files_from_s3(
-                    source, "*weather_data*.parquet", with_metadata=True,
-                    date_prefix=date_prefix)
-            elif source == "vegvesen_travel_times":
-                                                       
-                parquet_files_metadata = get_all_parquet_files_from_s3(
-                    "vegvesen", "*travel_times*.parquet", with_metadata=True,
-                    date_prefix=date_prefix)
-            elif source == "vegvesen_traffic_situations":
-                parquet_files_metadata = get_all_parquet_files_from_s3(
-                    "vegvesen", "*traffic_situations*.parquet", with_metadata=True,
-                    date_prefix=date_prefix)
-            else:
-                parquet_files_metadata = get_all_parquet_files_from_s3(
-                    source, with_metadata=True,
-                    date_prefix=date_prefix)
 
             if not parquet_files_metadata:
                 print(f"{source}: No parquet files found on S3.")
                 continue
 
-                                                                               
-            normalized_files = set() if re_run_all else load_normalized_files(source)
             files_to_process_metadata = [
-                f for f in parquet_files_metadata
-                if f["key"] not in normalized_files
+                f for f in parquet_files_metadata if _is_new(source, f)
             ]
             if not files_to_process_metadata:
                 print(f"{source}: All files already normalized. Skipping.\n")
@@ -837,8 +883,6 @@ def run_normalization(
             if use_interval:
                 sorted_dates = _filter_dates_to_interval(
                     sorted_dates, start_date, end_date)
-            elif only_today:
-                sorted_dates = [d for d in sorted_dates if d == today_str]
             if not sorted_dates:
                 if only_today and not use_interval:
                     print(f"{source}: No files from today ({today_str}). Skipping.\n")
@@ -850,6 +894,8 @@ def run_normalization(
             print(f"{source}: Processing by date (oldest first)...\n")
 
                                          
+            failed_keys: set[str] = set()
+            done_dates: list[str] = []
             total_processed = 0
             total_errors = 0
             all_newly_normalized = []
@@ -874,6 +920,7 @@ def run_normalization(
                         df = read_parquet_from_s3(s3_key)
                         if df is None:
                             errors += 1
+                            failed_keys.add(s3_key)
                             continue
                         raw_dfs.append(df)
                     if raw_dfs:
@@ -901,6 +948,7 @@ def run_normalization(
                             df = read_parquet_from_s3(s3_key)
                             if df is None:
                                 errors += 1
+                                failed_keys.add(s3_key)
                                 print(
                                     f"  ✗ {os.path.basename(s3_key)}: Error reading from S3")
                                 continue
@@ -924,6 +972,7 @@ def run_normalization(
                                     f"  - {os.path.basename(s3_key)}: empty, skipping")
                         except Exception as e:
                             errors += 1
+                            failed_keys.add(s3_key)
                             print(
                                 f"  ✗ {os.path.basename(s3_key)}: Error -> {str(e)[:80]}")
 
@@ -977,11 +1026,10 @@ def run_normalization(
 
                                                                       
                     df_pandas = combined_df.to_pandas()
-                    save_parquet_to_s3(df_pandas, parquet_s3_key)
+                    _save(df_pandas, parquet_s3_key)
 
                                                                          
                     if newly_normalized:
-                        mark_files_as_normalized(source, newly_normalized)
                         all_newly_normalized.extend(newly_normalized)
 
                     total_processed += processed
@@ -994,38 +1042,27 @@ def run_normalization(
                         print(f"  ⚠ {date_str}: {errors} errors")
                     print()
 
+                done_dates.append(date_str)
+                _advance(source, _attempted(files_to_process_metadata, files_by_date, done_dates), failed_keys)
+
                                      
             if all_newly_normalized:
                 print(
                     f"{source}: Summary - Processed {total_processed} files across {len(sorted_dates)} days")
                 print(
-                    f"{source}: Marked {len(all_newly_normalized)} files as normalized in tracking file\n")
+                    f"{source}: Normalized {len(all_newly_normalized)} files\n")
             else:
                 print(
                     f"{source}: No valid data to save (processed: {total_processed}, errors: {total_errors})\n")
 
                                                                                                                    
     source = "entur_siri_et"
-    siri_et_metadata = get_all_parquet_files_from_s3(
-        "entur", "*_siri_et_*.parquet", with_metadata=True,
-        date_prefix=date_prefix)
-    trip_updates_metadata = get_all_parquet_files_from_s3(
-        "entur", "*trip-updates*.parquet", with_metadata=True,
-        date_prefix=date_prefix)
-                                                                                                   
-    seen_keys = set()
-    parquet_files_metadata = []
-    for f in (siri_et_metadata or []) + (trip_updates_metadata or []):
-        if f["key"] not in seen_keys:
-            seen_keys.add(f["key"])
-            parquet_files_metadata.append(f)
-    parquet_files_metadata.sort(key=lambda x: x["key"])
+    parquet_files_metadata = _raw_for_run(source)
     if not parquet_files_metadata:
         print(f"{source}: No SIRI ET or trip-updates parquet files found on S3.\n")
     else:
-        normalized_files = set() if re_run_all else load_normalized_files(source)
         files_to_process_metadata = [
-            f for f in parquet_files_metadata if f["key"] not in normalized_files
+            f for f in parquet_files_metadata if _is_new(source, f)
         ]
         if not files_to_process_metadata:
             print(
@@ -1036,8 +1073,6 @@ def run_normalization(
             if use_interval:
                 sorted_dates = _filter_dates_to_interval(
                     sorted_dates, start_date, end_date)
-            elif only_today:
-                sorted_dates = [d for d in sorted_dates if d == today_str]
             if not sorted_dates:
                 if only_today and not use_interval:
                     print(
@@ -1052,6 +1087,8 @@ def run_normalization(
                 else:
                     print(
                         f"{source}: Found {len(files_to_process_metadata)} SIRI ET / trip-updates files across {len(sorted_dates)} days\n")
+                failed_keys: set[str] = set()
+                done_dates: list[str] = []
                 all_newly_normalized = []
                 for date_str in sorted_dates:
                     files_for_date = files_by_date[date_str]
@@ -1063,6 +1100,7 @@ def run_normalization(
                         try:
                             df = read_parquet_from_s3(s3_key)
                             if df is None:
+                                failed_keys.add(s3_key)
                                 continue
                             if "timestamp" in df.columns:
                                 raw_total += df.height
@@ -1079,6 +1117,7 @@ def run_normalization(
                                 newly_normalized.append(s3_key)
                         except Exception as e:
                             print(f"  ✗ {os.path.basename(s3_key)}: {e}")
+                            failed_keys.add(s3_key)
                     if all_normalized:
                         first_schema = all_normalized[0].schema
                         aligned = [
@@ -1127,18 +1166,18 @@ def run_normalization(
                                 f"  Entur SIRI ET {date_str}: deduplicated {n_before_et} -> {n_after_et} unique trips (by {dedup_cols})")
                         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
                         parquet_s3_key = f"normalized/{date_str}/entur_siri_et_normalized_{timestamp}.parquet"
-                        save_parquet_to_s3(
-                            combined_df.to_pandas(), parquet_s3_key)
-                        mark_files_as_normalized(source, newly_normalized)
+                        _save(combined_df.to_pandas(), parquet_s3_key)
                         all_newly_normalized.extend(newly_normalized)
                         msg = f"  ✓ {date_str}: entur_siri_et -> {parquet_s3_key} ({combined_df.height} trip-delay records)"
                         if raw_total > 0:
                             pct = 100.0 * raw_zero_ts / raw_total
                             msg += f" | raw: {raw_zero_ts}/{raw_total} ({pct:.0f}%) timestamp=0"
                         print(msg)
+                    done_dates.append(date_str)
+                    _advance(source, _attempted(files_to_process_metadata, files_by_date, done_dates), failed_keys)
                 if all_newly_normalized:
                     print(
-                        f"{source}: Marked {len(all_newly_normalized)} files as normalized.\n")
+                        f"{source}: Normalized {len(all_newly_normalized)} files.\n")
 
 
 if __name__ == "__main__":
@@ -1168,7 +1207,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--re-run-all",
         action="store_true",
-        help="Ignore normalized tracking: process all raw files (full re-normalization from scratch).",
+        help="Ignore the watermark: process all raw files (full re-normalization from scratch).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Read and normalize but write nothing to S3 (no Parquet, no watermark).",
     )
     parser.add_argument(
         "--only-entur-delays",
@@ -1201,4 +1245,5 @@ if __name__ == "__main__":
         end_date=end_date,
         re_run_all=args.re_run_all,
         only_entur_delays=args.only_entur_delays,
+        dry_run=args.dry_run,
     )

@@ -1,0 +1,6 @@
+polars
+pandas
+pyarrow
+boto3
+certifi
+python-dotenv
