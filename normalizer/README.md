@@ -5,8 +5,8 @@ collectors' zip + layer packaging):
 
 | Function | Schedule | What it does |
 |---|---|---|
-| `NormalizeFunction` | `NormalizeSchedule`, default every 15 min | normalizes raw files newer than each source's watermark and writes one Parquet per source and date folder to `normalized/<date>/` |
-| `CompactFunction` | daily 03:30 Europe/Oslo | merges the files of closed days (older than 2 days) into one per source and day, removing duplicates, then deletes the inputs |
+| `NormalizeFunction` | every `NormalizeEveryMinutes` minutes, default 5 | normalizes raw files newer than each source's watermark and writes one Parquet per source and date folder to `normalized/<date>/` |
+| `CompactFunction` | daily 03:30 Europe/Oslo (`CompactScheduleState`, off by default) | merges the files of closed days (older than 2 days) into one per source and day, removing duplicates, then deletes the inputs |
 
 Progress is one watermark per source in `s3://<bucket>/data/json/normalization_watermark.json`
 (`utils/normalization_state.py`), replacing the 30 MB `normalization_tracking.json`. A raw file that
@@ -14,10 +14,17 @@ fails to read holds the watermark back, so the next run retries it.
 
 ## Delay this adds
 
-A record reaches the API about `collection interval + NormalizeSchedule + run time` after the source
-published it: 0 to 15 min extra at the default, 0 to 60 min if you schedule hourly. A run of about one hour of data took
-well under a minute to read and normalize in the measurements (see below), so 5 to 15 minutes is
-affordable; the cost is more, smaller files, which the compactor merges daily.
+A record reaches the API about `collection interval + NormalizeEveryMinutes + run time` after the source
+published it: up to 5 min extra at the default of 5, up to 60 min if you schedule hourly. An incremental
+run (a few minutes of new raw files) takes 1 to 3 s; a backlog of about 40 minutes of data took 56 s.
+
+How to pick the value: each run writes one new Parquet per source into the day's folder, so the interval
+sets the number of small files (288 per source and day at 5 min, 1440 at 1 min). The API opens the files of
+the days it queries, and the compactor only merges days older than 2, so below about 3 minutes queries over
+the last two days slow down for little gain. For "now" views that must be fresher than the normalization
+interval, read the raw files instead (they are seconds old).
+
+Change it with `sam deploy --parameter-overrides NormalizeEveryMinutes=<n> ScheduleState=ENABLED`.
 
 ## First deployment
 
@@ -37,6 +44,6 @@ old tracking file does not list (about half of all raw files here: days outside 
 they are skipped from then on.
 
 Runs must not overlap (two overlapping runs would normalize the same raw files twice). Reserved
-concurrency would enforce that, but it needs an account concurrency limit above the 10 AWS keeps
-unreserved, which this account does not have. Instead `NormalizeFunction` times out after 14 minutes,
-shorter than the default 15 minute schedule; keep the timeout below `NormalizeSchedule` if you change it.
+concurrency would enforce that, but this account's concurrency limit of 10 leaves none to reserve, so
+`normalizer/handler.py` takes an S3 lock (`data/json/normalize.lock`, a conditional write) and a run that
+finds it held skips. A lock past its expiry, left by a run that timed out, is taken over.

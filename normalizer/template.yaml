@@ -13,15 +13,22 @@ Parameters:
     Type: String
     Default: data/json
     Description: Where normalization_watermark.json lives
-  NormalizeSchedule:
-    Type: String
-    Default: rate(15 minutes)
-    Description: How often new raw files are normalized; this is the extra delay before they reach the API
-  # Schedules are created DISABLED; run the migration (analysis/migrate_tracking_to_watermark.py) and test first.
+  NormalizeEveryMinutes:
+    Type: Number
+    Default: 5
+    MinValue: 2
+    Description: How often new raw files are normalized, in minutes; this is the extra delay before they reach the API
+  # Schedules are created DISABLED; check a manual invocation first, then deploy with ENABLED.
   ScheduleState:
     Type: String
     Default: DISABLED
     AllowedValues: [ENABLED, DISABLED]
+    Description: State of the normalization schedule
+  CompactScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+    Description: State of the daily compaction schedule, kept separate so it stays off until you want it
 
 Globals:
   Function:
@@ -44,10 +51,9 @@ Resources:
       PackageType: Image
       ImageConfig:
         Command: ["normalizer.handler.normalize_handler"]
-      # Shorter than the default 15 min schedule so a run never overlaps the next one (two overlapping
-      # runs would normalize the same raw files twice). Reserved concurrency would enforce this, but the
-      # account's concurrency limit of 10 leaves no room to reserve any.
-      Timeout: 840
+      # Overlapping runs are prevented by an S3 lock in normalizer/handler.py, so the timeout may exceed the
+      # schedule interval (a catch-up after an outage can take several minutes).
+      Timeout: 900
       MemorySize: 3008
       Policies:
         - S3CrudPolicy:
@@ -56,7 +62,7 @@ Resources:
         Schedule:
           Type: ScheduleV2
           Properties:
-            ScheduleExpression: !Ref NormalizeSchedule
+            ScheduleExpression: !Sub "rate(${NormalizeEveryMinutes} minutes)"
             State: !Ref ScheduleState
 
   CompactFunction:
@@ -79,7 +85,7 @@ Resources:
           Properties:
             ScheduleExpression: cron(30 3 * * ? *)
             ScheduleExpressionTimezone: Europe/Oslo
-            State: !Ref ScheduleState
+            State: !Ref CompactScheduleState
 
   NormalizeLogGroup:
     Type: AWS::Logs::LogGroup
