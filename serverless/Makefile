@@ -20,6 +20,9 @@ build-AvinorFunction:
 build-EnturFunction:
 	$(call package,entur)
 
+build-EnturNationalFunction:
+	$(call package,entur)
+
 build-OsloBysykkelFunction:
 	$(call package,oslobysykkel)
 
