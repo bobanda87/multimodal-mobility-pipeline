@@ -1,0 +1,6 @@
+fastapi
+mangum
+duckdb
+boto3
+python-dotenv
+pytz

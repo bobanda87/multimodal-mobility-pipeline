@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Read-only FastAPI service over the normalized Parquet data on S3 (Lambda container image + Function URL).
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: phdprojectdata
+  ParquetPath:
+    Type: String
+    Default: data/parquet
+  ApiKey:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Required in the X-API-Key header of every request
+
+Resources:
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: api/Dockerfile
+      DockerContext: ..
+    Properties:
+      PackageType: Image
+      Architectures: [arm64]
+      Timeout: 29
+      MemorySize: 2048
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref BucketName
+          S3_PARQUET_PATH: !Ref ParquetPath
+          API_KEY: !Ref ApiKey
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref BucketName
+      FunctionUrlConfig:
+        AuthType: NONE  # access is controlled by the X-API-Key header checked in the app
+        InvokeMode: BUFFERED
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ApiFunction}"
+      RetentionInDays: 7
+
+Outputs:
+  ApiUrl:
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
