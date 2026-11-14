@@ -23,6 +23,9 @@ build-EnturFunction:
 build-EnturNationalFunction:
 	$(call package,entur)
 
+build-EnturSiriNationalFunction:
+	$(call package,entur)
+
 build-OsloBysykkelFunction:
 	$(call package,oslobysykkel)
 

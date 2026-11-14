@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Data collectors (Avinor, Entur, Entur national GTFS-RT, Oslo Bysykkel, Vegvesen) as scheduled Lambda functions writing Parquet to S3.
+Description: Data collectors (Avinor, Entur, Entur national GTFS-RT, Entur national SIRI ET, Oslo Bysykkel, Vegvesen) as scheduled Lambda functions writing Parquet to S3.
 
 Parameters:
   BucketName:
@@ -135,6 +135,30 @@ Resources:
     Properties:
       RetentionInDays: 7
 
+  EnturSiriNationalFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      Handler: entur.entur_siri_national_collect.lambda_handler
+      Timeout: 120
+      MemorySize: 2048
+      LoggingConfig:
+        LogGroup: !Ref EnturSiriNationalLogGroup
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref BucketName
+      Events:
+        Schedule:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 minute)
+            State: !Ref ScheduleState
+  EnturSiriNationalLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
   VegvesenFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -165,4 +189,4 @@ Resources:
 
 Outputs:
   Functions:
-    Value: !Sub "${AvinorFunction}, ${EnturFunction}, ${EnturNationalFunction}, ${OsloBysykkelFunction}, ${VegvesenFunction}"
+    Value: !Sub "${AvinorFunction}, ${EnturFunction}, ${EnturNationalFunction}, ${EnturSiriNationalFunction}, ${OsloBysykkelFunction}, ${VegvesenFunction}"
