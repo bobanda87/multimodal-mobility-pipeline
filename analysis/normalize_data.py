@@ -418,7 +418,11 @@ def normalize_vegvesen(df: pl.DataFrame) -> pl.DataFrame:
 def normalize_vegvesen_travel_times(df: pl.DataFrame) -> pl.DataFrame:
     """Normalize Vegvesen travel_times (Datex2 ElaboratedDataPublication).
     Output: location_id, period_start, period_end, free_flow_travel_time_sec,
-    free_flow_speed_kmh, traffic_status, source.
+    free_flow_speed_kmh, traffic_status, travel_time_sec, travel_time_trend, travel_time_type, source.
+
+    The feed has two kinds of entries per location: the reference (free flow time and speed, status) and the
+    measurement (travelTime, its trend and type); each fills its own columns and leaves the other's null.
+    travel_time_sec is the current travel time, the congestion signal; free_flow_travel_time_sec is constant.
     """
     pq_col = "ns2:messageContainer.ns2:payload.ns10:physicalQuantity"
     if pq_col not in df.columns:
@@ -439,6 +443,15 @@ def normalize_vegvesen_travel_times(df: pl.DataFrame) -> pl.DataFrame:
         "speed").cast(pl.Float64, strict=False)
     traffic_status = bd.struct.field(
         "ns10:trafficStatus").struct.field("ns10:trafficStatusValue")
+    # a file in which no location has a measurement lacks these fields altogether
+    basic_fields = {f.name for f in next(
+        f.dtype for f in df.schema[pq_col].fields if f.name == "ns10:basicData").fields}
+    travel_time_sec = (bd.struct.field("ns10:travelTime").struct.field("ns10:duration").cast(pl.Float64, strict=False)
+                       if "ns10:travelTime" in basic_fields else pl.lit(None, dtype=pl.Float64))
+    travel_time_trend = (bd.struct.field("ns10:travelTimeTrendType").cast(pl.Utf8, strict=False)
+                         if "ns10:travelTimeTrendType" in basic_fields else pl.lit(None, dtype=pl.Utf8))
+    travel_time_type = (bd.struct.field("ns10:travelTimeType").cast(pl.Utf8, strict=False)
+                        if "ns10:travelTimeType" in basic_fields else pl.lit(None, dtype=pl.Utf8))
     df = df.with_columns([
         location_id.alias("location_id"),
         period_start_str.str.to_datetime(
@@ -448,6 +461,9 @@ def normalize_vegvesen_travel_times(df: pl.DataFrame) -> pl.DataFrame:
         free_flow_travel_time_sec.alias("free_flow_travel_time_sec"),
         free_flow_speed_kmh.alias("free_flow_speed_kmh"),
         traffic_status.alias("traffic_status"),
+        travel_time_sec.alias("travel_time_sec"),
+        travel_time_trend.alias("travel_time_trend"),
+        travel_time_type.alias("travel_time_type"),
     ])
     return df.select([
         pl.col("location_id"),
@@ -456,6 +472,9 @@ def normalize_vegvesen_travel_times(df: pl.DataFrame) -> pl.DataFrame:
         pl.col("free_flow_travel_time_sec"),
         pl.col("free_flow_speed_kmh"),
         pl.col("traffic_status"),
+        pl.col("travel_time_sec"),
+        pl.col("travel_time_trend"),
+        pl.col("travel_time_type"),
         pl.lit("vegvesen").alias("source"),
     ])
 
