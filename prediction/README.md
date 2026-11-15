@@ -63,6 +63,8 @@ EC2 is not needed; ECR only stores the image.
     docker buildx build --platform linux/arm64 -f prediction/Dockerfile -t <acct>.dkr.ecr.eu-north-1.amazonaws.com/phd-prediction:<tag> --push .
     aws cloudformation deploy --stack-name phd-prediction --template-file prediction/template.yaml --capabilities CAPABILITY_IAM \
         --parameter-overrides ImageUri=<acct>.dkr.ecr.eu-north-1.amazonaws.com/phd-prediction:<tag> SubnetIds=<subnet-a>,<subnet-b>
+    # first time only, with an administrator (not the deployer): the ECS service-linked role, else RunTask fails with
+    # "Unable to assume the service linked role":  aws iam create-service-linked-role --aws-service-name ecs.amazonaws.com
     # the schedule is created DISABLED; run once by hand (Outputs: RunNow), read /ecs/phd-prediction, then ScheduleState=ENABLED
 
 ### Reading the logs and errors of the job
