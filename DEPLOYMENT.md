@@ -97,6 +97,8 @@ Suggested order: Bysykkel, Entur national, Entur SIRI national, Avinor, Vegvesen
 5. **Monitor.** Invoke it with `{"threshold_scale": 0.0001, "dry_run": true}`: it prints an alert for every source and sends nothing.
 6. **API.** `curl -H "X-API-Key: <key>" <ApiUrl>/sources`; open `<ApiUrl>/docs`, press Authorize, try an endpoint.
 
+Where logs and metrics live, and how to pull them out: `monitor/README.md`, section "Reading logs and metrics in CloudWatch".
+
 ## 6. Update, roll back, remove
 
 * Update: change the code, `sam build`, `sam deploy` with the same parameters. Images are pushed to ECR (a few minutes).

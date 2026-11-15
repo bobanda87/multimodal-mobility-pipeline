@@ -49,3 +49,41 @@ treats every source as stale, prints what would be sent, and sends and writes no
     PYTHONPATH=. .venv/bin/python -m monitor.gap_report --since 2026-11-15T00:00 --start 2026-11-15 --list
 
 lists, per source, expected and actual files, coverage, and every gap, from the time each file reached S3.
+
+## Reading logs and metrics in CloudWatch
+
+Alerts of the data monitor, the per-call statistics and every error go to CloudWatch Logs; no webhook is needed.
+Log retention is 90 days for the collectors, 30 for the monitor and 7 for the normalizer and the API.
+
+Log group names (the collector groups carry a generated suffix, so look them up):
+
+    aws logs describe-log-groups --query 'logGroups[].[logGroupName,retentionInDays]' --output text
+    aws cloudformation describe-stack-resources --stack-name phd-collectors \
+        --query "StackResources[?ResourceType=='AWS::Logs::LogGroup'].[LogicalResourceId,PhysicalResourceId]" --output text
+
+Follow or search a group (names as above; the normalizer and API groups are `/aws/lambda/phd-<stack>-<Function>-<id>`):
+
+    aws logs tail <log-group> --since 30m --follow
+    aws logs filter-log-events --log-group-name <log-group> --start-time $(( ($(date +%s)-3600)*1000 )) \
+        --filter-pattern '?ERROR ?Traceback ?"Task timed out" ?ALERT' --query 'events[].message' --output text
+
+What to look for:
+
+| Line | Meaning |
+|---|---|
+| `ALERT: ...` (monitor group) | a source is stale or a check failed; `RECOVERED: ...` when it is back |
+| `{"Source": ..., "CallsOk": ..., "CallsFailed": ...}` | one statistics line per source and invocation (also a CloudWatch metric) |
+| `Task timed out`, `Runtime exited`, `out of memory` | a function died; the REPORT line shows `Max Memory Used` |
+| `upload(s) failed` | an S3 write failed; the invocation is marked as failed |
+
+Summaries from the log, without writing queries:
+
+    PYTHONPATH=. python -m monitor.call_report --days 1                  # ok / empty / failed per source
+    PYTHONPATH=. python -m monitor.call_report --since 2026-11-14 --by-day
+    PYTHONPATH=. python -m monitor.gap_report                            # recorded gaps in the data
+
+Metrics (console: CloudWatch -> All metrics): namespace `Collectors` (CallsOk, CallsFailed, Retries per `Source`) and
+`DataFreshness` (AgeSeconds per `Source`); the monitor's gaps are also in `data/json/data_gaps/<month>.json`.
+Reading metrics with the CLI needs `cloudwatch:GetMetricData` and `ListMetrics`, which the deploy policy does not grant.
+Logs Insights (console, or `aws logs start-query`) works on the same log groups, for example
+`fields @timestamp, @message | filter @message like /CallsFailed": [1-9]/ | sort @timestamp desc`.
