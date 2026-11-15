@@ -996,10 +996,12 @@ def run_normalization(
                     combined_df = pl.concat(normalized_aligned)
 
                                                                                                         
+                    # date_str is the local (Europe/Oslo) date of the raw files; timestamps are UTC, so compare local dates
+                    # (a UTC date would drop the first hour after local midnight of every day)
                     if source == "vegvesen" and "timestamp" in combined_df.columns:
                         n_before = combined_df.height
                         combined_df = combined_df.filter(
-                            pl.col("timestamp").dt.strftime("%Y-%m-%d") == date_str
+                            pl.col("timestamp").dt.convert_time_zone("Europe/Oslo").dt.strftime("%Y-%m-%d") == date_str
                         )
                         n_after = combined_df.height
                         if n_before > n_after:
@@ -1011,7 +1013,7 @@ def run_normalization(
                     if source == "vegvesen_traffic_situations" and "minute" in combined_df.columns:
                         n_before = combined_df.height
                         combined_df = combined_df.filter(
-                            pl.col("minute").dt.strftime("%Y-%m-%d") == date_str
+                            pl.col("minute").dt.convert_time_zone("Europe/Oslo").dt.strftime("%Y-%m-%d") == date_str
                         )
                         n_after = combined_df.height
                         if n_before > n_after:
