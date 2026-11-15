@@ -7,7 +7,8 @@ S3 layout (a new prefix, nothing the collectors or the API read):
   prediction/models/<UTC stamp>/model.txt + report.json every challenger's report, the model file only if promoted
   prediction/champion.json                              {"model_key", "trained_at", "config", "holdout_mae", ...}
 
-Settings (environment): WINDOW_DAYS (default 35), HOLDOUT_DAYS (3), MIN_TRAIN_DAYS (7), CONFIG (siri+all).
+Settings (environment): FIRST_DAY (earliest day used, default 2026-11-15: before it the data is not complete or lacks columns),
+WINDOW_DAYS (default 35), HOLDOUT_DAYS (3), MIN_TRAIN_DAYS (7), CONFIG (siri+all).
 A day is built only when it is complete: its last target needs three more hours of follow-up data.
 
     PYTHONPATH=. python -m prediction.nightly            # what the task runs
@@ -33,6 +34,7 @@ from prediction.split import split_by_time
 
 OSLO = ZoneInfo("Europe/Oslo")
 PREFIX = "prediction"
+FIRST_DAY = os.getenv("FIRST_DAY", "2026-11-15")
 WINDOW_DAYS = int(os.getenv("WINDOW_DAYS", "35"))
 HOLDOUT_DAYS = int(os.getenv("HOLDOUT_DAYS", "3"))
 MIN_TRAIN_DAYS = int(os.getenv("MIN_TRAIN_DAYS", "7"))
@@ -63,7 +65,7 @@ def build_missing_days(workdir: Path, now: datetime) -> list[str]:
         start = datetime(day.year, day.month, day.day, tzinfo=OSLO)
         end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=OSLO)
         key = f"{PREFIX}/features/features_{day:%Y-%m-%d}.parquet"
-        if _exists(key) or now < end + timedelta(hours=build_dataset.LOOKAHEAD_H):
+        if f"{day:%Y-%m-%d}" < FIRST_DAY or _exists(key) or now < end + timedelta(hours=build_dataset.LOOKAHEAD_H):
             continue
         rows = build_dataset.build(con, start, end, until=now)
         if not rows:
@@ -85,7 +87,7 @@ def download_window(workdir: Path, now: datetime) -> list[str]:
     for back in range(WINDOW_DAYS, 0, -1):
         day = f"{today - timedelta(days=back):%Y-%m-%d}"
         key = f"{PREFIX}/features/features_{day}.parquet"
-        if _exists(key):
+        if day >= FIRST_DAY and _exists(key):
             s3.download_file(BUCKET, key, str(workdir / f"features_{day}.parquet"))
             days.append(day)
     return days

@@ -27,6 +27,10 @@ Parameters:
     Default: 50
     MinValue: 21
     Description: Disk for the downloaded feature tables (21 to 200)
+  FirstDay:
+    Type: String
+    Default: '2026-11-15'
+    Description: Earliest day the job uses (earlier data is incomplete)
   WindowDays:
     Type: Number
     Default: 35
@@ -105,6 +109,7 @@ Resources:
           Environment:
             - {Name: S3_BUCKET_NAME, Value: !Ref BucketName}
             - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
+            - {Name: FIRST_DAY, Value: !Ref FirstDay}
             - {Name: WINDOW_DAYS, Value: !Ref WindowDays}
             - {Name: HOLDOUT_DAYS, Value: !Ref HoldoutDays}
             - {Name: MIN_TRAIN_DAYS, Value: !Ref MinTrainDays}
