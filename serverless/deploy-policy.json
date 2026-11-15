@@ -103,6 +103,43 @@
       "Effect": "Allow",
       "Action": "scheduler:*",
       "Resource": "arn:aws:scheduler:eu-north-1:173471018037:schedule/default/*FunctionSchedule"
+    },
+    {
+      "Sid": "PredictionEcsTask",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:CreateCluster",
+        "ecs:DeleteCluster",
+        "ecs:DescribeClusters",
+        "ecs:TagResource",
+        "ecs:UntagResource",
+        "ecs:RunTask",
+        "ecs:StopTask",
+        "ecs:DescribeTasks",
+        "ecs:ListTasks",
+        "ecs:RegisterTaskDefinition",
+        "ecs:DeregisterTaskDefinition",
+        "ecs:DescribeTaskDefinition",
+        "ecs:ListTaskDefinitions",
+        "ecs:DeleteTaskDefinitions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PredictionNetworkLookup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeSubnets",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSecurityGroups"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PredictionSchedule",
+      "Effect": "Allow",
+      "Action": "scheduler:*",
+      "Resource": "arn:aws:scheduler:eu-north-1:173471018037:schedule/default/phd-prediction-*"
     }
   ]
 }

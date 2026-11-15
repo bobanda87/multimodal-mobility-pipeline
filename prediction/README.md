@@ -46,3 +46,21 @@ No. LightGBM has no "fine-tuning" in the neural network sense; a new model is tr
   little unless the monitoring below shows drift.
 * **Monitoring the model** (to add when it is served): MAE of the last days against the Entur baseline, per horizon;
   when the gain over Entur shrinks or the error rises, retrain.
+
+## Nightly job on ECS Fargate (`nightly.py`, `Dockerfile`, `template.yaml`)
+Every night at 04:00 (Europe/Oslo) a Fargate task builds the feature tables of the new complete days (to
+`s3://<bucket>/prediction/features/`), trains a challenger on the last 35 days except the newest 3, tests it and the
+model in use (the champion) on those 3 days, and promotes the challenger only if the paired trip-level bootstrap puts
+it clearly below the champion's error. Reports go to `prediction/models/<stamp>/report.json`, the champion is named in
+`prediction/champion.json`, metrics go to CloudWatch (namespace `Prediction`: Mae per model and horizon, Promoted,
+GainVsEntur). With fewer than 10 complete days it only logs that it skipped. The task role can write only below `prediction/`.
+
+Cost estimate (not measured): 4 vCPU and 16 GB for about 20 minutes a night is on the order of 0.1 USD a day.
+EC2 is not needed; ECR only stores the image.
+
+    # one-off: repository, then build and push (arm64), then the stack
+    aws ecr create-repository --repository-name phd-prediction
+    docker buildx build --platform linux/arm64 -f prediction/Dockerfile -t <acct>.dkr.ecr.eu-north-1.amazonaws.com/phd-prediction:<tag> --push .
+    aws cloudformation deploy --stack-name phd-prediction --template-file prediction/template.yaml --capabilities CAPABILITY_IAM \
+        --parameter-overrides ImageUri=<acct>.dkr.ecr.eu-north-1.amazonaws.com/phd-prediction:<tag> SubnetIds=<subnet-a>,<subnet-b>
+    # the schedule is created DISABLED; run once by hand (Outputs: RunNow), read /ecs/phd-prediction, then ScheduleState=ENABLED

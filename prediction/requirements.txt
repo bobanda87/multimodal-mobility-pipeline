@@ -1,0 +1,8 @@
+# the nightly container (prediction/Dockerfile)
+duckdb
+lightgbm
+scikit-learn
+numpy
+pandas
+boto3
+python-dotenv

@@ -1,0 +1,171 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Nightly delay prediction job as a scheduled ECS Fargate task (cluster, task definition, roles, schedule).
+
+Parameters:
+  ImageUri:
+    Type: String
+    Description: ECR image of prediction/Dockerfile, with a tag that is new at every deploy (e.g. the git commit)
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: Subnets of the default VPC (the task gets a public address to reach ECR and S3)
+  BucketName:
+    Type: String
+    Default: phdprojectdata
+  ScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+  Cpu:
+    Type: String
+    Default: '4096'
+  Memory:
+    Type: String
+    Default: '16384'
+    Description: MiB; 4 vCPU allows 8192 to 30720
+  EphemeralGiB:
+    Type: Number
+    Default: 50
+    MinValue: 21
+    Description: Disk for the downloaded feature tables (21 to 200)
+  WindowDays:
+    Type: Number
+    Default: 35
+  HoldoutDays:
+    Type: Number
+    Default: 3
+  MinTrainDays:
+    Type: Number
+    Default: 7
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/phd-prediction
+      RetentionInDays: 90
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: data
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub arn:aws:s3:::${BucketName}
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub arn:aws:s3:::${BucketName}/*
+              - Effect: Allow  # the job writes only below prediction/
+                Action: s3:PutObject
+                Resource: !Sub arn:aws:s3:::${BucketName}/prediction/*
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: phd-prediction
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      EphemeralStorage:
+        SizeInGiB: !Ref EphemeralGiB
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: nightly
+          Image: !Ref ImageUri
+          Essential: true
+          Environment:
+            - {Name: S3_BUCKET_NAME, Value: !Ref BucketName}
+            - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
+            - {Name: WINDOW_DAYS, Value: !Ref WindowDays}
+            - {Name: HOLDOUT_DAYS, Value: !Ref HoldoutDays}
+            - {Name: MIN_TRAIN_DAYS, Value: !Ref MinTrainDays}
+            - {Name: DUCK_MEMORY, Value: 11GB}
+            - {Name: DUCK_THREADS, Value: '4'}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: nightly
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: scheduler.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: run-task
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecs:RunTask
+                Resource: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/phd-prediction:*
+                Condition:
+                  ArnEquals: {'ecs:cluster': !GetAtt Cluster.Arn}
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: [!GetAtt ExecutionRole.Arn, !GetAtt TaskRole.Arn]
+
+  NightlySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: phd-prediction-nightly
+      Description: Features for the new day, a challenger model, comparison with the model in use
+      ScheduleExpression: cron(0 4 * * ? *)
+      ScheduleExpressionTimezone: Europe/Oslo
+      FlexibleTimeWindow: {Mode: 'OFF'}
+      State: !Ref ScheduleState
+      Target:
+        Arn: !GetAtt Cluster.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        EcsParameters:
+          TaskDefinitionArn: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/phd-prediction
+          LaunchType: FARGATE
+          PlatformVersion: LATEST
+          NetworkConfiguration:
+            AwsvpcConfiguration:
+              Subnets: !Ref SubnetIds
+              AssignPublicIp: ENABLED
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+
+Outputs:
+  Cluster:
+    Value: !Ref Cluster
+  RunNow:
+    Description: Start the job by hand
+    Value: !Sub aws ecs run-task --cluster ${Cluster} --task-definition phd-prediction --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[<subnet>],assignPublicIp=ENABLED}"

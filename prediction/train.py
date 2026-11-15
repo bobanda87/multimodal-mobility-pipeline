@@ -12,6 +12,7 @@ Feature groups (ablation: each configuration is trained separately and tested on
   network    mode, operator, line, stop position
   weather    Vegvesen weather at the nearest station (+ distance)
   bikes      Oslo Bysykkel bikes/docks within 300 m of the stop
+  traffic    measured travel time (ratio to free flow, trend) of the nearest monitored road segment within 150 m
 The multimodal comparison is also reported on the rows that have bike data (Oslo), where all groups exist.
 """
 import argparse
@@ -31,13 +32,16 @@ GROUPS = {
     "network": ["mode", "operator_ref", "line_ref", "datasource", "stop_lat", "stop_lon"],
     "weather": ["wx_air_temp", "wx_road_temp", "wx_precip", "wx_wind", "wx_humidity", "wx_dist_km"],
     "bikes": ["bk_bikes", "bk_docks", "bk_bikes_delta", "bk_stations"],
+    "traffic": ["tt_ratio", "tt_trend", "tt_seconds", "tt_dist_m"],
 }
 CATEGORICAL = ["mode", "operator_ref", "line_ref", "datasource"]
 CONFIGS = {
     "siri": ["siri", "calendar", "network"],
     "siri+weather": ["siri", "calendar", "network", "weather"],
     "siri+bikes": ["siri", "calendar", "network", "bikes"],
+    "siri+traffic": ["siri", "calendar", "network", "traffic"],
     "siri+weather+bikes": ["siri", "calendar", "network", "weather", "bikes"],
+    "siri+all": ["siri", "calendar", "network", "weather", "bikes", "traffic"],
 }
 PARAMS = dict(objective="l1", learning_rate=0.05, n_estimators=2000, num_leaves=63, min_child_samples=100,
               subsample=0.8, subsample_freq=1, colsample_bytree=0.8, cat_smooth=50, verbose=-1, n_jobs=6,
@@ -118,7 +122,7 @@ def run(df: pd.DataFrame, out: Path, params=PARAMS, shap_rows: int = 5000, embar
     boot = {}
     for name in CONFIGS:
         boot[f"{name}_vs_entur"] = metrics.paired_bootstrap(test, preds[name], preds["entur"])
-    for name in ("siri+weather", "siri+bikes", "siri+weather+bikes"):
+    for name in ("siri+weather", "siri+bikes", "siri+traffic", "siri+weather+bikes", "siri+all"):
         boot[f"{name}_vs_siri"] = metrics.paired_bootstrap(test, preds[name], preds["siri"])
     result["bootstrap"] = boot
     best = min(CONFIGS, key=lambda n: overall.loc[overall.model == n, "mae"].iloc[0])

@@ -14,6 +14,8 @@ pd.DataFrame({"site_id": ["W1", "W2"], "name": ["near", "far"], "lat": [59.9, 60
              ).to_parquet(ref / "weather_sites.parquet")
 pd.DataFrame({"station_id": ["B1"], "name": ["b"], "lat": [59.9], "lon": [10.75], "capacity": [20]}
              ).to_parquet(ref / "bike_stations.parquet")
+pd.DataFrame({"location_id": ["R1", "R1", "R2"], "lat": [59.9005, 59.9006, 61.0], "lon": [10.75, 10.7502, 10.75]}
+             ).to_parquet(ref / "traffic_vertices.parquet")
 pd.DataFrame({"route_id": ["L:1"], "route_type": ["700"]}).to_parquet(ref / "routes.parquet")
 bd.REFERENCE = ref
 
@@ -52,6 +54,10 @@ con.execute("CREATE TABLE wx AS SELECT * FROM (VALUES ('W1', %f, 5.0, 1.0, 0.0, 
 con.execute("CREATE TABLE bike_bin AS SELECT * FROM (VALUES ('B1', %d, 10.0, 5.0), ('B1', %d, 3.0, 12.0), ('B1', %d, 1.0, 14.0), ('B1', %d, 20.0, 1.0))"
             " t(station_id, bin, bikes, docks)" % (int(T0 // 300 * 300) + 600, int(T0 // 300 * 300) + 1200,
                                                     int(T0 // 300 * 300) + 1500, int(T0 // 300 * 300) - 300))
+
+con.execute("CREATE TABLE tt AS SELECT * FROM (VALUES ('R1', %f, 90.0, 'stable', 100.0), ('R1', %f, 120.0, 'increasing', 100.0),"
+            " ('R1', %f, 500.0, 'increasing', 100.0), ('R2', %f, 999.0, 'stable', 100.0))"
+            " t(location_id, ts, travel_time_sec, trend, free_flow_sec)" % (T0 - 3000, T0 + 1200, T0 + 1600, T0 + 1200))
 
 n = bd.make_features(con, T0, T0 + 3000, horizons=(300, 1800))
 f = con.execute("SELECT * FROM features").df()
@@ -92,4 +98,10 @@ assert r.wx_air_temp == 5.0 and r.wx_age_s == 600
 # bikes: last COMPLETED 5 minute bin before t_pred (the bin that contains t_pred is not used), trend vs 30 minutes earlier
 r = get(4, 300)  # t_pred = T0+1500 -> bin T0+1200 (3 bikes); the bin T0+1500 holds 1 and is still running
 assert r.bk_stations == 1 and r.bk_bikes == 3.0 and r.bk_docks == 12.0 and r.bk_bikes_prev == 20.0, (r.bk_bikes, r.bk_bikes_prev)
+
+# traffic: the road segment R1 is 55 m away (R2 is far); newest observation at or before t_pred, never a later one
+r = get(4, 300)  # t_pred = T0+1500: T0+1200 (120 s on a free flow of 100 s, increasing); T0+1600 is the future
+assert r.tt_ratio == 1.2 and r.tt_trend == 1 and r.tt_seconds == 120 and 0 < r.tt_dist_m < 150, (r.tt_ratio, r.tt_dist_m)
+r = get(4, 1800)  # t_pred = T0: the only earlier observation is 3000 s old, past the 30 minute limit
+assert pd.isna(r.tt_ratio) and pd.isna(r.tt_trend)
 print("prediction feature tests passed")

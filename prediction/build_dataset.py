@@ -16,6 +16,7 @@ Leakage guards:
 Multimodal features (each group is switched on/off by the ablation in train.py):
   wx_*  Vegvesen weather at the nearest station (distance kept as wx_dist_km)
   bk_*  Oslo Bysykkel bikes and docks within 300 m of the stop
+  tt_*  Vegvesen measured travel time on the nearest monitored road segment within 150 m (ratio to free flow, trend)
 
     PYTHONPATH=. python -m prediction.build_dataset --start 2026-11-15 --end 2026-11-16 --until 2026-11-15T10:00
 """
@@ -37,6 +38,9 @@ REFERENCE = Path(__file__).parent / "reference"
 HORIZONS_S = (300, 900, 1800)
 DELAY_RANGE_S = (-1800, 10800)  # recorded delays outside this are treated as data errors
 BIKE_RADIUS_M = 300
+TRAFFIC_RADIUS_M = 150
+TRAFFIC_MAX_AGE_S = 1800
+LOOKAHEAD_H = 3  # follow-up data a target needs: the stop's arrival is recorded some time after it happens
 WEATHER_MAX_AGE_S = 7200
 
 
@@ -50,7 +54,7 @@ def _haversine(lat1, lon1, lat2, lon2) -> str:
 
 
 def build(con, day_start: datetime, day_end: datetime, until: datetime | None = None, lookback_h: int = 3,
-          lookahead_h: int = 3, horizons=HORIZONS_S) -> int:
+          lookahead_h: int = LOOKAHEAD_H, horizons=HORIZONS_S) -> int:
     """Create the temp table `features` for targets with aimed time in [day_start, day_end) (aware datetimes)."""
     lo, hi = day_start.astimezone(timezone.utc), day_end.astimezone(timezone.utc)
     if until is not None:
@@ -106,7 +110,23 @@ def _load(con, win_a: datetime, win_b: datetime) -> bool:
             GROUP BY location, bin""")
     else:
         _empty_bikes(con)
+    tt_files = files.normalized_files("vegvesen_travel_times", win_a, win_b)
+    if tt_files:
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE tt AS
+            SELECT location_id, epoch(period_end) AS ts, max(travel_time_sec) AS travel_time_sec,
+                   arg_max(travel_time_trend, period_end) FILTER (WHERE travel_time_trend IS NOT NULL) AS trend,
+                   max(free_flow_travel_time_sec) AS free_flow_sec
+            FROM read_parquet({_lst(tt_files)}, union_by_name=true)
+            GROUP BY location_id, epoch(period_end)""")
+    else:
+        _empty_tt(con)
     return True
+
+
+def _empty_tt(con) -> None:
+    con.execute("""CREATE OR REPLACE TEMP TABLE tt AS SELECT NULL::VARCHAR location_id, NULL::DOUBLE ts,
+        NULL::DOUBLE travel_time_sec, NULL::VARCHAR trend, NULL::DOUBLE free_flow_sec LIMIT 0""")
 
 
 def _empty_weather(con) -> None:
@@ -187,6 +207,7 @@ def make_features(con, lo: float, hi: float, horizons=HORIZONS_S) -> int:
 
     _add_stops(con)
     _add_weather(con)
+    _add_traffic(con)
     _add_bikes(con)
     return con.execute("SELECT count(*) FROM features").fetchone()[0]
 
@@ -228,11 +249,45 @@ def _add_weather(con) -> None:
         FROM base4""")
 
 
+def _add_traffic(con) -> None:
+    """Measured travel time of the nearest monitored road segment within TRAFFIC_RADIUS_M, newest observation at prediction time."""
+    cell_lat, cell_lon = 0.002, 0.004  # the grid keeps the distance computation to the neighbouring cells
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE stop_road AS
+        SELECT stop, location_id, dist_m FROM (
+            SELECT d.stop, v.location_id,
+                   {_haversine('d.stop_lat', 'd.stop_lon', 'v.lat', 'v.lon')} AS dist_m,
+                   row_number() OVER (PARTITION BY d.stop ORDER BY {_haversine('d.stop_lat', 'd.stop_lon', 'v.lat', 'v.lon')}) AS rn
+            FROM (SELECT DISTINCT stop, stop_lat, stop_lon, floor(stop_lat / {cell_lat})::BIGINT AS ci,
+                         floor(stop_lon / {cell_lon})::BIGINT AS cj FROM base5 WHERE stop_lat IS NOT NULL) d
+            CROSS JOIN (VALUES (-1), (0), (1)) a(di) CROSS JOIN (VALUES (-1), (0), (1)) b(dj)
+            JOIN (SELECT location_id, lat, lon, floor(lat / {cell_lat})::BIGINT AS ci, floor(lon / {cell_lon})::BIGINT AS cj
+                  FROM read_parquet('{REFERENCE}/traffic_vertices.parquet')) v
+              ON v.ci = d.ci + a.di AND v.cj = d.cj + b.dj)
+        WHERE rn = 1 AND dist_m <= {TRAFFIC_RADIUS_M}""")
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE base5r AS
+        SELECT b.*, r.location_id AS tt_loc, r.dist_m AS tt_dist_m FROM base5 b LEFT JOIN stop_road r ON r.stop = b.stop""")
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE free_flow AS
+        SELECT location_id, max(free_flow_sec) AS free_flow_sec FROM tt GROUP BY location_id""")
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE base6 AS
+        SELECT b.* EXCLUDE (tt_loc),
+               CASE WHEN b.t_pred - t.ts <= {TRAFFIC_MAX_AGE_S} THEN t.travel_time_sec / nullif(f.free_flow_sec, 0) END AS tt_ratio,
+               CASE WHEN b.t_pred - t.ts <= {TRAFFIC_MAX_AGE_S}
+                    THEN CASE t.trend WHEN 'increasing' THEN 1 WHEN 'decreasing' THEN -1 WHEN 'stable' THEN 0 END END AS tt_trend,
+               CASE WHEN b.t_pred - t.ts <= {TRAFFIC_MAX_AGE_S} THEN t.travel_time_sec END AS tt_seconds
+        FROM base5r b
+        ASOF LEFT JOIN (SELECT * FROM tt WHERE travel_time_sec IS NOT NULL) t ON b.tt_loc = t.location_id AND b.t_pred >= t.ts
+        LEFT JOIN free_flow f ON f.location_id = b.tt_loc""")
+
+
 def _add_bikes(con) -> None:
     """Bikes and docks at the Bysykkel stations within BIKE_RADIUS_M of the stop, last completed 5 minute bin."""
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE stop_bike AS
-        SELECT d.stop, b.station_id FROM (SELECT DISTINCT stop, stop_lat, stop_lon FROM base5 WHERE stop_lat IS NOT NULL) d
+        SELECT d.stop, b.station_id FROM (SELECT DISTINCT stop, stop_lat, stop_lon FROM base6 WHERE stop_lat IS NOT NULL) d
         JOIN read_parquet('{REFERENCE}/bike_stations.parquet') b
           ON {_haversine('d.stop_lat', 'd.stop_lon', 'b.lat', 'b.lon')} <= {BIKE_RADIUS_M}""")
     con.execute("""
@@ -243,7 +298,7 @@ def _add_bikes(con) -> None:
     con.execute("""
         CREATE OR REPLACE TEMP TABLE features AS
         SELECT b.*, k.bikes AS bk_bikes, k.docks AS bk_docks, kp.bikes AS bk_bikes_prev, k.n AS bk_stations
-        FROM base5 b
+        FROM base6 b
         LEFT JOIN stop_bin k ON k.stop = b.stop AND k.bin = (floor(b.t_pred / 300) * 300)::BIGINT - 300
         LEFT JOIN stop_bin kp ON kp.stop = b.stop AND kp.bin = (floor(b.t_pred / 300) * 300)::BIGINT - 1800""")
 

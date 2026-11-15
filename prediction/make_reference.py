@@ -5,13 +5,17 @@ One-off: small static reference tables used for the spatial joins (written to pr
   stops.parquet          NSR quay/stop id -> lat/lon                (stops.txt of the Entur GTFS Norway export)
   routes.parquet         line id -> GTFS route_type, gives the mode where SIRI has none (routes.txt of the same export)
   bike_stations.parquet  Oslo Bysykkel station id -> lat/lon        (latest station_information file on S3)
+  traffic_vertices.parquet  Vegvesen travel time location id -> vertices of its road line, lat/lon
+                         (DATEX II GetPredefinedTravelTimeLocations, EPSG:32633 converted with pyproj)
 
     PYTHONPATH=. python -m prediction.make_reference weather
     PYTHONPATH=. python -m prediction.make_reference stops <gtfs.zip>
     PYTHONPATH=. python -m prediction.make_reference bikes
+    PYTHONPATH=. python -m prediction.make_reference traffic
 """
 import io
 import os
+import re
 import sys
 import zipfile
 import xml.etree.ElementTree as ET
@@ -51,6 +55,31 @@ def weather():
     print("weather sites:", len(df))
 
 
+TT_URL = "https://datex-server-get-v3-1.atlas.vegvesen.no/datexapi/GetPredefinedTravelTimeLocations/pullsnapshotdata"
+_LINE = re.compile(r'predefinedLocationReference xsi:type="ns9:PredefinedLocation" id="(\d+)".*?<ns9:posList>([^<]+)</ns9:posList>',
+                   re.S)
+
+
+def parse_traffic_vertices(xml: str) -> pd.DataFrame:
+    from pyproj import Transformer
+    to_wgs84 = Transformer.from_crs(32633, 4326, always_xy=True)
+    rows = []
+    for m in _LINE.finditer(xml):
+        nums = list(map(float, m.group(2).split()))
+        lon, lat = to_wgs84.transform(nums[0::2], nums[1::2])
+        rows += [(m.group(1), a, b) for a, b in zip(lat, lon)]
+    return pd.DataFrame(rows, columns=["location_id", "lat", "lon"])
+
+
+def traffic():
+    load_dotenv()
+    r = requests.get(TT_URL, auth=HTTPBasicAuth(os.getenv("VEGVESEN_USER"), os.getenv("VEGVESEN_PASS")), timeout=120)
+    r.raise_for_status()
+    df = parse_traffic_vertices(r.text)
+    df.to_parquet(OUT / "traffic_vertices.parquet", index=False)
+    print("traffic vertices:", len(df), "locations:", df.location_id.nunique())
+
+
 def stops(zip_path: str):
     with zipfile.ZipFile(zip_path) as z, z.open("stops.txt") as f:
         df = pd.read_csv(f, usecols=["stop_id", "stop_name", "stop_lat", "stop_lon"], dtype={"stop_id": str})
@@ -76,4 +105,4 @@ def bikes():
 
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
-    {"weather": weather, "bikes": bikes}.get(sys.argv[1], lambda: stops(sys.argv[2]))()
+    {"weather": weather, "bikes": bikes, "traffic": traffic}.get(sys.argv[1], lambda: stops(sys.argv[2]))()

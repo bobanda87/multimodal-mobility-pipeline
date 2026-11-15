@@ -23,7 +23,7 @@ for trip in range(600):
                      "direction_ref": "0", "hour": 8, "dow": 1, "local_date": "2027-01-15", "stop_lat": 59.9,
                      "stop_lon": 10.7, "wx_air_temp": 2.0, "wx_road_temp": 1.0, "wx_precip": 1.0 if rain else 0.0,
                      "wx_wind": 3.0, "wx_humidity": 80.0, "wx_dist_km": 1.0, "wx_age_s": 300.0,
-                     "bk_bikes": 5.0, "bk_docks": 5.0, "bk_bikes_prev": 5.0, "bk_stations": 1})
+                     "bk_bikes": 5.0, "bk_docks": 5.0, "bk_bikes_prev": 5.0, "bk_stations": 1, "tt_ratio": 1.1, "tt_trend": 0, "tt_seconds": 110.0, "tt_dist_m": 40.0})
 df = pd.DataFrame(rows)
 
 # split: no trip in two sets, sets are time ordered, the embargo leaves a gap before each boundary
