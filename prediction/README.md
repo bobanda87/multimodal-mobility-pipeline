@@ -64,3 +64,19 @@ EC2 is not needed; ECR only stores the image.
     aws cloudformation deploy --stack-name phd-prediction --template-file prediction/template.yaml --capabilities CAPABILITY_IAM \
         --parameter-overrides ImageUri=<acct>.dkr.ecr.eu-north-1.amazonaws.com/phd-prediction:<tag> SubnetIds=<subnet-a>,<subnet-b>
     # the schedule is created DISABLED; run once by hand (Outputs: RunNow), read /ecs/phd-prediction, then ScheduleState=ENABLED
+
+### Reading the logs and errors of the job
+The task writes to CloudWatch Logs, group `/ecs/phd-prediction` (90 days), stream prefix `nightly/`. A failure is an
+`ERROR: nightly prediction job failed` line with the traceback above it, a `Failed=1` metric and exit code 1.
+
+    aws logs tail /ecs/phd-prediction --since 3h                       # the last run
+    aws logs filter-log-events --log-group-name /ecs/phd-prediction --start-time $(( ($(date +%s)-86400)*1000 )) \
+        --filter-pattern '?ERROR ?Traceback ?skipped' --query 'events[].message' --output text
+    aws ecs list-tasks --cluster <Cluster output> --desired-status STOPPED             # recent runs
+    aws ecs describe-tasks --cluster <Cluster output> --tasks <task arn> --query 'tasks[].[stoppedReason,containers[0].exitCode]'
+
+Reasons a task fails without any log line (image cannot be pulled, out of memory, no capacity) are only in
+`stoppedReason` of `describe-tasks` (`OutOfMemoryError: Container killed due to memory usage` means a larger `Memory`).
+Lines that are not errors: `skipped: N days, need M` (too little data yet) and the JSON report at the end of a run.
+Metrics (console: CloudWatch -> All metrics -> `Prediction`): `Failed`, `Skipped`, `Promoted`, `TrainRows`, `GainVsEntur`,
+and `Mae` per `Model` and `Horizon`. Where the other logs are read: `monitor/README.md`.

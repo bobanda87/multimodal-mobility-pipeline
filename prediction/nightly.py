@@ -17,6 +17,7 @@ import os
 import shutil
 import sys
 import tempfile
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -158,6 +159,17 @@ def run(now: datetime | None = None) -> dict:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def main() -> None:
+    """Entry point of the task: a failure is a logged ERROR line with the traceback, a metric and a non-zero exit."""
+    try:
+        run()
+    except Exception:
+        traceback.print_exc()
+        print("ERROR: nightly prediction job failed", flush=True)
+        emit({"Failed": 1})
+        sys.exit(1)
+    emit({"Failed": 0})
+
+
 if __name__ == "__main__":
-    run()
-    sys.exit(0)
+    main()
