@@ -1,8 +1,7 @@
 # Delay prediction (multimodal)
 
 Predicts the arrival delay of public transport at upcoming stops from what SIRI ET knows `horizon` seconds before
-the aimed arrival, with weather (Vegvesen) and Oslo Bysykkel as additional modalities. The plan and the scientific
-requirements are in `../PREDICTION_PLAN.md`; all of this runs locally, on the data in S3.
+the aimed arrival, with weather (Vegvesen) and Oslo Bysykkel as additional modalities. All of this runs locally, on the data in S3.
 
     # one-off reference tables (stops/routes from the Entur GTFS export, weather stations from Vegvesen, bike stations)
     PYTHONPATH=. python -m prediction.make_reference stops <gtfs-norway.zip>

@@ -232,3 +232,7 @@ analysis/output/s3_all_keys.csv
 prediction/data/
 prediction/results/
 prediction/reference/stops.parquet
+
+# Local planning notes, never committed
+PREDICTION_PLAN.md
+PAPER_REVISION_PLAN.md
