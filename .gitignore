@@ -227,3 +227,8 @@ logs/
 # Large temporary files (572 MB GTFS download, 166 MB S3 key inventory)
 analysis/reference/_gtfs_norway_tmp.zip
 analysis/output/s3_all_keys.csv
+
+# prediction: tables and results are built locally from S3; stops.parquet is rebuilt from the GTFS export
+prediction/data/
+prediction/results/
+prediction/reference/stops.parquet

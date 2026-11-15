@@ -32,6 +32,9 @@ pillow
 numpy
 scipy
 scikit-learn
+duckdb
+lightgbm
+shap
 
 # Spatial statistics: Moran's I / LISA (analysis/multi_city_spatial_autocorrelation.py)
 libpysal
